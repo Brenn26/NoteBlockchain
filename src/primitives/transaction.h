@@ -232,12 +232,7 @@ inline void UnserializeTransaction(TxType& tx, Stream& s) {
         throw std::ios_base::failure("Unknown transaction optional data");
     }
     s >> tx.nLockTime;
-    // PoS: Read transaction time (default to 0 for compatibility)
-    try {
-        s >> tx.nTime;
-    } catch (...) {
-        tx.nTime = 0;
-    }
+    s >> tx.nTime;  // PoS: Transaction timestamp
 }
 
 template<typename Stream, typename TxType>

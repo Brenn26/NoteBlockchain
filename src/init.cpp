@@ -610,7 +610,7 @@ void CleanupBlockRevFiles()
     // keeping a separate counter.  Once we hit a gap (or if 0 doesn't exist)
     // start removing block files.
     int nContigCounter = 0;
-    for (const std::pair<std::string, fs::path>& item : mapBlockFiles) {
+    for (const auto& item : mapBlockFiles) {
         if (atoi(item.first) == nContigCounter) {
             nContigCounter++;
             continue;
@@ -1747,8 +1747,8 @@ bool AppInitMain()
 
     // Start masternode staking thread
     if (gArgs.GetBoolArg("-staking", true)) {
-        if (!vpwallets.empty()) {
-            CWallet* pwallet = vpwallets[0];
+        if (!::vpwallets.empty()) {
+            CWallet* pwallet = ::vpwallets[0];
             if (pwallet) {
                 uiInterface.InitMessage(_("Starting masternode staking..."));
                 threadGroup.create_thread(boost::bind(&ThreadStakeMinter, pwallet));
