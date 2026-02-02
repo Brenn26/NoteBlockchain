@@ -8,6 +8,7 @@
 #include "key.h"
 #include "net.h"
 #include "primitives/transaction.h"
+#include "serialize.h"
 #include "sync.h"
 #include "uint256.h"
 
@@ -38,17 +39,19 @@ public:
     CMasternode();
     CMasternode(const COutPoint& outpointIn, const CService& addrIn, const CPubKey& pubKeyIn);
 
-    SERIALIZE_METHODS(CMasternode, obj)
-    {
-        LOCK(obj.cs);
-        READWRITE(obj.outpoint);
-        READWRITE(obj.addr);
-        READWRITE(obj.pubKeyMasternode);
-        READWRITE(obj.sigTime);
-        READWRITE(obj.nActiveState);
-        READWRITE(obj.nTimeLastSeen);
-        READWRITE(obj.nProtocolVersion);
-        READWRITE(obj.nTimeCreated);
+    ADD_SERIALIZE_METHODS;
+
+    template <typename Stream, typename Operation>
+    inline void SerializationOp(Stream& s, Operation ser_action) {
+        LOCK(cs);
+        READWRITE(outpoint);
+        READWRITE(addr);
+        READWRITE(pubKeyMasternode);
+        READWRITE(sigTime);
+        READWRITE(nActiveState);
+        READWRITE(nTimeLastSeen);
+        READWRITE(nProtocolVersion);
+        READWRITE(nTimeCreated);
     }
 
     bool IsEnabled() const { return nActiveState == MASTERNODE_ENABLED; }
