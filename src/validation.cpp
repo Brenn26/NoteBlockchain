@@ -17,6 +17,8 @@
 #include <cuckoocache.h>
 #include <hash.h>
 #include <init.h>
+#include <kernel.h>
+#include <masternode/masternodeman.h>
 #include <policy/fees.h>
 #include <policy/policy.h>
 #include <policy/rbf.h>
@@ -1980,11 +1982,63 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
     LogPrint(BCLog::BENCH, "      - Connect %u transactions: %.2fms (%.3fms/tx, %.3fms/txin) [%.2fs (%.2fms/blk)]\n", (unsigned)block.vtx.size(), MILLI * (nTime3 - nTime2), MILLI * (nTime3 - nTime2) / block.vtx.size(), nInputs <= 1 ? 0 : MILLI * (nTime3 - nTime2) / (nInputs-1), nTimeConnect * MICRO, nTimeConnect * MILLI / nBlocksTotal);
 
     CAmount blockReward = nFees + GetBlockSubsidy(pindex->nHeight, chainparams.GetConsensus());
-    if (block.vtx[0]->GetValueOut() > blockReward)
-        return state.DoS(100,
-                         error("ConnectBlock(): coinbase pays too much (actual=%d vs limit=%d)",
-                               block.vtx[0]->GetValueOut(), blockReward),
-                               REJECT_INVALID, "bad-cb-amount");
+
+    // PoS: Different validation for Proof-of-Stake blocks
+    if (block.IsProofOfStake()) {
+        // Verify the stake kernel
+        uint256 hashProofOfStake;
+        if (!CheckProofOfStake(pindex->pprev, *block.vtx[1], pindex->nBits, hashProofOfStake, view, chainparams.GetConsensus()))
+            return state.DoS(100, error("ConnectBlock(): proof-of-stake check failed"), REJECT_INVALID, "bad-pos-stake");
+
+        // Set the PoS flag and stake modifier
+        pindex->SetProofOfStake();
+        ComputeNextStakeModifier(pindex->pprev, pindex->nStakeModifier);
+
+        // Verify coinstake reward (output 2 is the reward)
+        if (block.vtx[1]->vout.size() < 3)
+            return state.DoS(100, error("ConnectBlock(): coinstake has insufficient outputs"), REJECT_INVALID, "bad-pos-outputs");
+
+        CAmount nStakeReward = block.vtx[1]->vout[2].nValue;
+        if (nStakeReward > blockReward)
+            return state.DoS(100, error("ConnectBlock(): coinstake pays too much (actual=%d vs limit=%d)", nStakeReward, blockReward),
+                           REJECT_INVALID, "bad-pos-amount");
+
+        // Collateral should be returned in output 1
+        if (block.vtx[1]->vout[1].nValue != chainparams.GetConsensus().nMasternodeCollateral)
+            return state.DoS(100, error("ConnectBlock(): coinstake doesn't return correct collateral"), REJECT_INVALID, "bad-pos-collateral");
+
+        // Verify IP uniqueness - one masternode per IP address
+        const COutPoint& masternodeOutpoint = block.vtx[1]->vin[0].prevout;
+        CMasternode* pmn = mnodeman.Find(masternodeOutpoint);
+
+        if (!pmn) {
+            // Masternode not found - this shouldn't happen if properly registered
+            LogPrintf("ConnectBlock(): Warning - Masternode %s not found in registry\n", masternodeOutpoint.ToStringShort());
+        } else {
+            // Verify no other masternode uses this IP
+            CService mnAddr = pmn->addr;
+            int countWithSameIP = 0;
+
+            for (const auto& mn : mnodeman.GetFullMasternodeVector()) {
+                if (mn.addr == mnAddr && mn.IsEnabled()) {
+                    countWithSameIP++;
+                    if (countWithSameIP > 1) {
+                        return state.DoS(100, error("ConnectBlock(): Multiple masternodes detected at IP %s", mnAddr.ToString()),
+                                       REJECT_INVALID, "bad-pos-duplicate-ip");
+                    }
+                }
+            }
+        }
+    } else {
+        // PoW: Validate coinbase reward
+        if (block.vtx[0]->GetValueOut() > blockReward)
+            return state.DoS(100, error("ConnectBlock(): coinbase pays too much (actual=%d vs limit=%d)",
+                                   block.vtx[0]->GetValueOut(), blockReward),
+                           REJECT_INVALID, "bad-cb-amount");
+
+        // Set stake modifier for PoW blocks too
+        ComputeNextStakeModifier(pindex->pprev, pindex->nStakeModifier);
+    }
 
     if (!control.Wait())
         return state.DoS(100, error("%s: CheckQueue failed", __func__), REJECT_INVALID, "block-validation-failed");
@@ -3004,7 +3058,9 @@ bool CheckBlock(const CBlock& block, CValidationState& state, const Consensus::P
 
     // Check that the header is valid (particularly PoW).  This is mostly
     // redundant with the call in AcceptBlockHeader.
-    if (!CheckBlockHeader(block, state, consensusParams, fCheckPOW))
+    // PoS blocks don't need PoW validation
+    bool fCheckPOWForBlock = fCheckPOW && block.IsProofOfWork();
+    if (!CheckBlockHeader(block, state, consensusParams, fCheckPOWForBlock))
         return false;
 
     // Check the merkle root.
@@ -3031,12 +3087,32 @@ bool CheckBlock(const CBlock& block, CValidationState& state, const Consensus::P
     if (block.vtx.empty() || block.vtx.size() * WITNESS_SCALE_FACTOR > MAX_BLOCK_WEIGHT || ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * WITNESS_SCALE_FACTOR > MAX_BLOCK_WEIGHT)
         return state.DoS(100, false, REJECT_INVALID, "bad-blk-length", false, "size limits failed");
 
-    // First transaction must be coinbase, the rest must not be
-    if (block.vtx.empty() || !block.vtx[0]->IsCoinBase())
-        return state.DoS(100, false, REJECT_INVALID, "bad-cb-missing", false, "first tx is not coinbase");
-    for (unsigned int i = 1; i < block.vtx.size(); i++)
-        if (block.vtx[i]->IsCoinBase())
-            return state.DoS(100, false, REJECT_INVALID, "bad-cb-multiple", false, "more than one coinbase");
+    // PoS: Check if this is a Proof-of-Stake block
+    if (block.IsProofOfStake()) {
+        // PoS blocks require at least 2 transactions (coinbase + coinstake)
+        if (block.vtx.size() < 2)
+            return state.DoS(100, false, REJECT_INVALID, "bad-pos-txcount", false, "PoS block must have at least 2 transactions");
+
+        // Second transaction must be coinstake
+        if (!block.vtx[1]->IsCoinStake())
+            return state.DoS(100, false, REJECT_INVALID, "bad-pos-coinstake", false, "second tx in PoS block is not coinstake");
+
+        // Coinbase must be empty for PoS
+        if (!block.vtx[0]->vout[0].IsEmpty())
+            return state.DoS(100, false, REJECT_INVALID, "bad-pos-coinbase", false, "coinbase not empty in PoS block");
+
+        // Only one coinstake allowed
+        for (unsigned int i = 2; i < block.vtx.size(); i++)
+            if (block.vtx[i]->IsCoinStake())
+                return state.DoS(100, false, REJECT_INVALID, "bad-pos-multiple-coinstake", false, "multiple coinstakes in block");
+    } else {
+        // PoW: First transaction must be coinbase, the rest must not be
+        if (block.vtx.empty() || !block.vtx[0]->IsCoinBase())
+            return state.DoS(100, false, REJECT_INVALID, "bad-cb-missing", false, "first tx is not coinbase");
+        for (unsigned int i = 1; i < block.vtx.size(); i++)
+            if (block.vtx[i]->IsCoinBase())
+                return state.DoS(100, false, REJECT_INVALID, "bad-cb-multiple", false, "more than one coinbase");
+    }
 
     // Check transactions
     for (const auto& tx : block.vtx)

@@ -22,6 +22,8 @@
 #include <key.h>
 #include <validation.h>
 #include <miner.h>
+#include <masternode/masternodeminer.h>
+#include <masternode/masternodeman.h>
 #include <netbase.h>
 #include <net.h>
 #include <net_processing.h>
@@ -1742,6 +1744,18 @@ bool AppInitMain()
 
 #ifdef ENABLE_WALLET
     StartWallets(scheduler);
+
+    // Start masternode staking thread
+    if (gArgs.GetBoolArg("-staking", true)) {
+        auto vpwallets = GetWallets();
+        if (!vpwallets.empty()) {
+            CWallet* pwallet = vpwallets[0];
+            if (pwallet) {
+                uiInterface.InitMessage(_("Starting masternode staking..."));
+                threadGroup.create_thread(boost::bind(&ThreadStakeMinter, pwallet));
+            }
+        }
+    }
 #endif
 
     return true;

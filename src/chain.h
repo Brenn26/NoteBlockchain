@@ -156,6 +156,7 @@ enum BlockStatus: uint32_t {
     BLOCK_HAVE_MASK          =   BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO,
 
     BLOCK_FAILED_VALID       =   32, //!< stage after last reached validness failed
+    BLOCK_PROOF_OF_STAKE     =   64, //!< proof-of-stake block (has coinstake)
     BLOCK_FAILED_CHILD       =   64, //!< descends from failed block
     BLOCK_FAILED_MASK        =   BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD,
 
@@ -219,6 +220,9 @@ public:
     //! (memory only) Maximum nTime in the chain up to and including this block.
     unsigned int nTimeMax;
 
+    //! PoS: Stake modifier for generating proof-of-stake blocks
+    uint64_t nStakeModifier;
+
     void SetNull()
     {
         phashBlock = nullptr;
@@ -234,6 +238,7 @@ public:
         nStatus = 0;
         nSequenceId = 0;
         nTimeMax = 0;
+        nStakeModifier = 0;
 
         nVersion       = 0;
         hashMerkleRoot = uint256();
@@ -307,6 +312,24 @@ public:
     int64_t GetBlockTimeMax() const
     {
         return (int64_t)nTimeMax;
+    }
+
+    // PoS: Check if this is a Proof-of-Stake block
+    bool IsProofOfStake() const
+    {
+        return (nStatus & BLOCK_PROOF_OF_STAKE);
+    }
+
+    // Check if this is a Proof-of-Work block
+    bool IsProofOfWork() const
+    {
+        return !IsProofOfStake();
+    }
+
+    // Set the PoS flag for this block
+    void SetProofOfStake()
+    {
+        nStatus |= BLOCK_PROOF_OF_STAKE;
     }
 
     static constexpr int nMedianTimeSpan = 11;

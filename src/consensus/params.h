@@ -86,6 +86,19 @@ struct Params {
     int nMinActualTimespanV4;
     /*End DigiSheild params*/
     int nDigiSheildHFHeight;
+    /* Reclaim Node parameters*/
+    int64_t nMasternodeCollateral;          // Required collateral (e.g., 200000 * COIN)
+    int nMasternodePaymentPercent;          // Percentage of block reward (50%)
+    int nMasternodeActivationHeight;        // Block height when masternodes activate
+    int nMasternodeMinimumConfirmations;    // Confirmations before collateral is valid (e.g., 100)
+
+    /* Proof of Stake parameters - Competing PoW/PoS Hybrid */
+    bool fAllowPoSBlocks;                   // Enable PoS blocks to compete with PoW
+    int64_t nStakeMinAge;                   // Minimum age before coins can stake (seconds)
+    int64_t nStakeMaxAge;                   // Maximum stake age (0 = no maximum)
+    unsigned int nPoSTargetWeight;          // PoS weight factor (300 = 30% target probability)
+    // Note: Block reward uses GetBlockSubsidy() - same dynamic reward for both PoW and PoS
+
 };
 } // namespace Consensus
 

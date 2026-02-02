@@ -1,0 +1,145 @@
+// Copyright (c) 2012-2013 The PPCoin developers
+// Copyright (c) 2020 The NoteBlockchain developers
+// Distributed under the MIT/X11 software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
+#include "kernel.h"
+#include "chain.h"
+#include "chainparams.h"
+#include "coins.h"
+#include "consensus/params.h"
+#include "hash.h"
+#include "streams.h"
+#include "uint256.h"
+#include "arith_uint256.h"
+#include "util.h"
+
+// Compute stake modifier for the next block
+// Mixes previous modifier with previous block hash for randomness
+bool ComputeNextStakeModifier(const CBlockIndex* pindexPrev, uint64_t& nStakeModifier)
+{
+    if (!pindexPrev) {
+        nStakeModifier = 0;
+        return true;
+    }
+
+    // Mix previous stake modifier with previous block hash
+    // This provides randomness and prevents pre-computation attacks
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << pindexPrev->nStakeModifier << pindexPrev->GetBlockHash();
+    nStakeModifier = ss.GetHash().GetUint64(0);
+
+    return true;
+}
+
+// Check if the coinstake kernel hash meets the difficulty target
+bool CheckStakeKernelHash(unsigned int nBits,
+                          const CBlockIndex* pindexFrom,
+                          const CTransaction& txPrev,
+                          const COutPoint& prevout,
+                          unsigned int nTimeTx,
+                          uint256& hashProofOfStake,
+                          const Consensus::Params& params)
+{
+    // Check that the output exists and is the right value
+    if (prevout.n >= txPrev.vout.size())
+        return false;
+
+    const CTxOut& prevTxOut = txPrev.vout[prevout.n];
+
+    // Must be masternode collateral amount
+    if (prevTxOut.nValue != params.nMasternodeCollateral)
+        return false;
+
+    // Get transaction time
+    unsigned int nTimeBlockFrom = pindexFrom->nTime;
+
+    // Check minimum stake age
+    int64_t nStakeAge = nTimeTx - nTimeBlockFrom;
+    if (nStakeAge < params.nStakeMinAge)
+        return false;
+
+    // Check maximum stake age if set
+    if (params.nStakeMaxAge > 0 && nStakeAge > params.nStakeMaxAge)
+        return false;
+
+    // Get stake modifier from previous block
+    uint64_t nStakeModifier = pindexFrom->nStakeModifier;
+
+    // Calculate the hash: hash(stakeModifier + txPrevTime + txPrevHash + txPrevN + txTime)
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << nStakeModifier;
+    ss << nTimeBlockFrom << prevout.hash << prevout.n << nTimeTx;
+    hashProofOfStake = ss.GetHash();
+
+    // Get the difficulty target
+    arith_uint256 bnTarget;
+    bnTarget.SetCompact(nBits);
+
+    // Apply PoS weight factor for 70/30 ratio
+    // PoS blocks should be ~30% as likely as PoW blocks
+    // So we make the target harder by multiplying by (nPoSTargetWeight / 1000)
+    // Example: 300/1000 = 0.3, making PoS 30% as likely
+    bnTarget = (bnTarget * params.nPoSTargetWeight) / 1000;
+
+    // Calculate weight based on coin value and age
+    // More coins and longer age = higher weight = easier to stake
+    arith_uint256 bnCoinDayWeight = arith_uint256(prevTxOut.nValue / COIN) * nStakeAge / (24 * 60 * 60);
+
+    // Target is multiplied by coin-day weight
+    arith_uint256 bnTargetProofOfStake = bnTarget * bnCoinDayWeight;
+
+    // Check if hash meets target
+    return UintToArith256(hashProofOfStake) <= bnTargetProofOfStake;
+}
+
+// Verify proof-of-stake for a coinstake transaction
+bool CheckProofOfStake(const CBlockIndex* pindexPrev,
+                       const CTransaction& tx,
+                       unsigned int nBits,
+                       uint256& hashProofOfStake,
+                       CCoinsViewCache& view,
+                       const Consensus::Params& params)
+{
+    if (!tx.IsCoinStake())
+        return error("CheckProofOfStake: called on non-coinstake transaction");
+
+    // First input must be from masternode collateral
+    const CTxIn& txin = tx.vin[0];
+
+    // Get the previous transaction output
+    Coin coin;
+    if (!view.GetCoin(txin.prevout, coin))
+        return error("CheckProofOfStake: input not found in UTXO set");
+
+    // Get the block containing the input transaction
+    const CBlockIndex* pindexFrom = nullptr;
+    if (!coin.nHeight || coin.nHeight > pindexPrev->nHeight)
+        return error("CheckProofOfStake: input block not found or too new");
+
+    pindexFrom = pindexPrev;
+    while (pindexFrom && pindexFrom->nHeight > (int)coin.nHeight)
+        pindexFrom = pindexFrom->pprev;
+
+    if (!pindexFrom)
+        return error("CheckProofOfStake: block index not found for input");
+
+    // Reconstruct the previous transaction
+    CTransaction txPrev;
+    txPrev.vout.resize(txin.prevout.n + 1);
+    txPrev.vout[txin.prevout.n] = coin.out;
+    txPrev.nTime = pindexFrom->nTime;
+
+    // Verify the stake kernel hash
+    return CheckStakeKernelHash(nBits, pindexFrom, txPrev, txin.prevout,
+                               tx.nTime, hashProofOfStake, params);
+}
+
+// Get the age of the stake in seconds
+int64_t GetStakeAge(const CTransaction& tx, unsigned int nTimeTx)
+{
+    if (tx.nTime > nTimeTx)
+        return 0;
+
+    return nTimeTx - tx.nTime;
+}
