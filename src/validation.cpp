@@ -2013,7 +2013,7 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
 
         if (!pmn) {
             // Masternode not found - this shouldn't happen if properly registered
-            LogPrintf("ConnectBlock(): Warning - Masternode %s not found in registry\n", masternodeOutpoint.ToStringShort());
+            LogPrintf("ConnectBlock(): Warning - Masternode %s not found in registry\n", masternodeOutpoint.ToString());
         } else {
             // Verify no other masternode uses this IP
             CService mnAddr = pmn->addr;
