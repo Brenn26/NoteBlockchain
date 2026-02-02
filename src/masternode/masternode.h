@@ -9,7 +9,6 @@
 #include "net.h"
 #include "primitives/transaction.h"
 #include "serialize.h"
-#include "sync.h"
 #include "uint256.h"
 
 /**
@@ -17,9 +16,6 @@
  */
 class CMasternode
 {
-private:
-    mutable CCriticalSection cs;
-
 public:
     enum State {
         MASTERNODE_ENABLED = 1,
@@ -43,7 +39,6 @@ public:
 
     template <typename Stream, typename Operation>
     inline void SerializationOp(Stream& s, Operation ser_action) {
-        LOCK(cs);
         READWRITE(outpoint);
         READWRITE(addr);
         READWRITE(pubKeyMasternode);
