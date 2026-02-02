@@ -13,6 +13,10 @@
 #include "uint256.h"
 #include "arith_uint256.h"
 #include "util.h"
+#include "timedata.h"      // For GetAdjustedTime()
+#include "primitives/transaction.h"  // For CMutableTransaction
+
+
 
 // Compute stake modifier for the next block
 // Mixes previous modifier with previous block hash for randomness
@@ -124,11 +128,14 @@ bool CheckProofOfStake(const CBlockIndex* pindexPrev,
     if (!pindexFrom)
         return error("CheckProofOfStake: block index not found for input");
 
-    // Reconstruct the previous transaction
-    CTransaction txPrev;
-    txPrev.vout.resize(txin.prevout.n + 1);
-    txPrev.vout[txin.prevout.n] = coin.out;
-    txPrev.nTime = pindexFrom->nTime;
+    // Use CMutableTransaction to build a modifiable transaction
+    CMutableTransaction mutableTxPrev;
+    mutableTxPrev.vout.resize(txin.prevout.n + 1);
+    mutableTxPrev.vout[txin.prevout.n] = coin.out;
+    mutableTxPrev.nTime = pindexFrom->nTime;
+    
+    // Convert to immutable CTransaction for the check
+    const CTransaction txPrev(mutableTxPrev);
 
     // Verify the stake kernel hash
     return CheckStakeKernelHash(nBits, pindexFrom, txPrev, txin.prevout,

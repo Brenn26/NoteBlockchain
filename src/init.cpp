@@ -8,7 +8,7 @@
 #endif
 
 #include <init.h>
-
+#include <wallet/wallet.h>
 #include <addrman.h>
 #include <amount.h>
 #include <chain.h>
@@ -1747,7 +1747,6 @@ bool AppInitMain()
 
     // Start masternode staking thread
     if (gArgs.GetBoolArg("-staking", true)) {
-        auto vpwallets = GetWallets();
         if (!vpwallets.empty()) {
             CWallet* pwallet = vpwallets[0];
             if (pwallet) {

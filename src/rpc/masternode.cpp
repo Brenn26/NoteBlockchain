@@ -10,6 +10,9 @@
 #include "wallet/wallet.h"
 #include "wallet/rpcwallet.h"
 #include "util.h"
+#include "utilmoneystr.h"  // For FormatMoney()
+
+
 
 UniValue masternode(const JSONRPCRequest& request)
 {
