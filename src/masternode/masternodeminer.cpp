@@ -9,6 +9,7 @@
 #include "chainparams.h"
 #include "coins.h"
 #include "net.h"
+#include "netbase.h"
 #include "consensus/merkle.h"
 #include "consensus/validation.h"
 #include "miner.h"
