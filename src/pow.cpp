@@ -15,17 +15,27 @@ unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHead
 {
     //Get next height and compare to forkheight
     if (pindexLast->nHeight + 1 > params.nDigiSheildHFHeight){
-        return DigiShieldV4(pindexLast,params);
+        return DigiShieldV4(pindexLast, pblock, params);
     }
     return GetNextWorkRequiredLegacy(pindexLast,pblock,params);
 }
 
-unsigned int DigiShieldV4(const CBlockIndex* pindexLast, const Consensus::Params& params)
+unsigned int DigiShieldV4(const CBlockIndex* pindexLast, const CBlockHeader *pblock, const Consensus::Params& params)
 {
+    const arith_uint256 powLimit = UintToArith256(params.powLimit);
+
+    // Special difficulty rule for testnet:
+    // If the new block's timestamp is more than 2* target spacing
+    // then allow mining of a min-difficulty block.
+    if (params.fPowAllowMinDifficultyBlocks)
+    {
+        if (pblock->GetBlockTime() > pindexLast->GetBlockTime() + params.nPowTargetSpacing * 2)
+            return powLimit.GetCompact();
+    }
+
     // find first block in averaging interval
     // Go back by what we want to be nAveragingInterval blocks per algo
     const CBlockIndex* pindexFirst = pindexLast;
-    const arith_uint256 powLimit = UintToArith256(params.powLimit);
     for (int i = 0; pindexFirst && i < params.nAveragingInterval; i++)
     {
         pindexFirst = pindexFirst->pprev;
