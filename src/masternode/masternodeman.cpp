@@ -3,6 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "masternodeman.h"
+#include "clientversion.h"
 #include "fs.h"
 #include "streams.h"
 #include "util.h"
