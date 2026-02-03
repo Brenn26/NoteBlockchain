@@ -6,6 +6,7 @@
 #define BITCOIN_MASTERNODE_MASTERNODEMAN_H
 
 #include "masternode.h"
+#include "serialize.h"
 #include "sync.h"
 #include <map>
 #include <vector>
@@ -58,7 +59,19 @@ public:
     // Check and remove expired masternodes
     void CheckAndRemove();
 
+    // Persistence
+    bool Save();
+    bool Load();
+
     std::string ToString() const;
+
+    ADD_SERIALIZE_METHODS;
+
+    template <typename Stream, typename Operation>
+    inline void SerializationOp(Stream& s, Operation ser_action) {
+        LOCK(cs);
+        READWRITE(mapMasternodes);
+    }
 };
 
 // Global masternode manager

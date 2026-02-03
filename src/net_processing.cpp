@@ -29,6 +29,7 @@
 #include <util.h>
 #include <utilmoneystr.h>
 #include <utilstrencodings.h>
+#include <masternode/masternodeman.h>
 #include <array>
 #include <memory>
 
@@ -1747,6 +1748,9 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             // nodes)
             connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::SENDHEADERS));
         }
+        // Request masternode list from peer
+        connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::GETMNLIST));
+        LogPrint(BCLog::NET, "Requesting masternode list from peer=%d\n", pfrom->GetId());
         if (pfrom->nVersion >= SHORT_IDS_BLOCKS_VERSION) {
             // Tell our peer we are willing to provide version 1 or 2 cmpctblocks
             // However, we do not request new block announcements using
@@ -2842,6 +2846,34 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     else if (strCommand == NetMsgType::NOTFOUND) {
         // We do not care about the NOTFOUND message, but logging an Unknown Command
         // message would be undesirable as we transmit it ourselves.
+    }
+
+    else if (strCommand == NetMsgType::MNANNOUNCE) {
+        // Receive masternode announcement from peer
+        CMasternode mn;
+        vRecv >> mn;
+
+        LogPrint(BCLog::NET, "Received masternode announcement %s from peer=%d\n",
+                mn.outpoint.ToString(), pfrom->GetId());
+
+        // Add to our masternode list
+        if (mnodeman.Add(mn)) {
+            // Relay to other peers
+            connman->ForEachNode([&mn, &connman](CNode* pnode) {
+                connman->PushMessage(pnode, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::MNANNOUNCE, mn));
+            });
+        }
+    }
+
+    else if (strCommand == NetMsgType::GETMNLIST) {
+        // Peer is requesting our masternode list
+        LogPrint(BCLog::NET, "Received masternode list request from peer=%d\n", pfrom->GetId());
+
+        // Send all masternodes
+        std::vector<CMasternode> vMasternodes = mnodeman.GetFullMasternodeVector();
+        for (const auto& mn : vMasternodes) {
+            connman->PushMessage(pfrom, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::MNANNOUNCE, mn));
+        }
     }
 
     else {

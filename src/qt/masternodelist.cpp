@@ -19,6 +19,8 @@
 #include "chainparams.h"
 #include "netbase.h"
 #include "util.h"
+#include "net.h"
+#include "netmessagemaker.h"
 
 #include <QTimer>
 #include <QMessageBox>
@@ -233,6 +235,14 @@ void MasternodeList::on_startButton_clicked()
             CMasternode mn(outpoint, addr, pubKey);
 
             if (mnodeman.Add(mn)) {
+                // Broadcast masternode to network
+                if (g_connman) {
+                    g_connman->ForEachNode([&mn](CNode* pnode) {
+                        g_connman->PushMessage(pnode, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::MNANNOUNCE, mn));
+                    });
+                    LogPrintf("Broadcast masternode %s to network\n", mn.outpoint.ToString());
+                }
+
                 QMessageBox::information(this, tr("Success"),
                     tr("Masternode started successfully!"),
                     QMessageBox::Ok, QMessageBox::Ok);

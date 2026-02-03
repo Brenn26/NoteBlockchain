@@ -3,6 +3,8 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "masternodeman.h"
+#include "fs.h"
+#include "streams.h"
 #include "util.h"
 #include "utiltime.h"
 
@@ -147,4 +149,59 @@ std::string CMasternodeMan::ToString() const
 {
     LOCK(cs);
     return strprintf("Masternodes: %d (enabled: %d)", mapMasternodes.size(), CountEnabled());
+}
+
+bool CMasternodeMan::Save()
+{
+    fs::path pathMNCache = GetDataDir() / "mncache.dat";
+
+    try {
+        CAutoFile file(fsbridge::fopen(pathMNCache, "wb"), SER_DISK, CLIENT_VERSION);
+        if (file.IsNull()) {
+            LogPrintf("CMasternodeMan::Save: Failed to open file %s\n", pathMNCache.string());
+            return false;
+        }
+
+        LOCK(cs);
+        file << *this;
+        LogPrintf("CMasternodeMan::Save: Saved %d masternodes to %s\n", mapMasternodes.size(), pathMNCache.string());
+        return true;
+    }
+    catch (const std::exception& e) {
+        LogPrintf("CMasternodeMan::Save: Exception - %s\n", e.what());
+        return false;
+    }
+}
+
+bool CMasternodeMan::Load()
+{
+    fs::path pathMNCache = GetDataDir() / "mncache.dat";
+
+    if (!fs::exists(pathMNCache)) {
+        LogPrintf("CMasternodeMan::Load: Cache file %s does not exist\n", pathMNCache.string());
+        return false;
+    }
+
+    try {
+        CAutoFile file(fsbridge::fopen(pathMNCache, "rb"), SER_DISK, CLIENT_VERSION);
+        if (file.IsNull()) {
+            LogPrintf("CMasternodeMan::Load: Failed to open file %s\n", pathMNCache.string());
+            return false;
+        }
+
+        LOCK(cs);
+        file >> *this;
+        LogPrintf("CMasternodeMan::Load: Loaded %d masternodes from %s\n", mapMasternodes.size(), pathMNCache.string());
+
+        // Update last seen times for loaded masternodes
+        for (auto& pair : mapMasternodes) {
+            pair.second.UpdateLastSeen();
+        }
+
+        return true;
+    }
+    catch (const std::exception& e) {
+        LogPrintf("CMasternodeMan::Load: Exception - %s\n", e.what());
+        return false;
+    }
 }

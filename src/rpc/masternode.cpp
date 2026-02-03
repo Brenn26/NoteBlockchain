@@ -13,6 +13,8 @@
 #include "utilmoneystr.h"  // For FormatMoney()
 #include "core_io.h"       // For ValueFromAmount()
 #include "netbase.h"       // For Lookup()
+#include "net.h"           // For g_connman
+#include "netmessagemaker.h" // For CNetMsgMaker
 
 
 
@@ -180,6 +182,14 @@ UniValue masternode(const JSONRPCRequest& request)
                 CMasternode mn(outpoint, addr, pubKey);
 
                 if (mnodeman.Add(mn)) {
+                    // Broadcast masternode to network
+                    if (g_connman) {
+                        g_connman->ForEachNode([&mn](CNode* pnode) {
+                            g_connman->PushMessage(pnode, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::MNANNOUNCE, mn));
+                        });
+                        LogPrintf("Broadcast masternode %s to network\n", mn.outpoint.ToString());
+                    }
+
                     UniValue obj(UniValue::VOBJ);
                     obj.pushKV("status", "success");
                     obj.pushKV("message", "Masternode started successfully");
