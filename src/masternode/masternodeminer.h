@@ -32,7 +32,7 @@ public:
     bool CreateCoinStake(const CChainParams& chainparams,
                         CWallet* pwallet,
                         unsigned int nBits,
-                        CTransaction& txNew,
+                        CMutableTransaction& txNew,
                         unsigned int& nTxNewTime);
 
     // Find stakeable masternode coins in wallet

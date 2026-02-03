@@ -119,7 +119,7 @@ bool CMasternodeMiner::SelectMasternodeCoins(std::vector<COutput>& vCoins,
 bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
                                       CWallet* pwallet,
                                       unsigned int nBits,
-                                      CTransaction& txNew,
+                                      CMutableTransaction& txNew,
                                       unsigned int& nTxNewTime)
 {
     const Consensus::Params& params = chainparams.GetConsensus();
@@ -196,7 +196,7 @@ bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
                 txNewMut.vin[0].scriptSig = sigdata.scriptSig;
                 txNewMut.vin[0].scriptWitness = sigdata.scriptWitness;
 
-                txNew = CTransaction(txNewMut);
+                txNew = txNewMut;
                 return true;
             }
         }
@@ -224,7 +224,7 @@ bool CMasternodeMiner::CreateBlock(CBlock& block, CWallet* pwallet, const CChain
     txCoinbase.vout[0].SetEmpty();
 
     // Create coinstake
-    CTransaction txCoinstake;
+    CMutableTransaction txCoinstake;
     unsigned int nTxNewTime;
 
     if (!CreateCoinStake(chainparams, pwallet, pindexPrev->nBits, txCoinstake, nTxNewTime))

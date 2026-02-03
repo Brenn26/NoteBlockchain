@@ -156,11 +156,11 @@ enum BlockStatus: uint32_t {
     BLOCK_HAVE_MASK          =   BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO,
 
     BLOCK_FAILED_VALID       =   32, //!< stage after last reached validness failed
-    BLOCK_PROOF_OF_STAKE     =   64, //!< proof-of-stake block (has coinstake)
     BLOCK_FAILED_CHILD       =   64, //!< descends from failed block
     BLOCK_FAILED_MASK        =   BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD,
 
     BLOCK_OPT_WITNESS       =   128, //!< block data in blk*.data was received with a witness-enforcing client
+    BLOCK_PROOF_OF_STAKE     =   256, //!< proof-of-stake block (has coinstake)
 };
 
 /** The block chain is a tree shaped structure starting with the
