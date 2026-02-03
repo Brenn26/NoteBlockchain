@@ -11,6 +11,7 @@
 
 class CBlockIndex;
 class CCoinsViewCache;
+class CChainParams;
 
 namespace Consensus {
     struct Params;

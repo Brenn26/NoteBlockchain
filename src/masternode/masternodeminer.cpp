@@ -12,7 +12,7 @@
 #include "consensus/merkle.h"
 #include "consensus/validation.h"
 #include "miner.h"
-#include "net.h"
+#include "init.h"
 #include "policy/policy.h"
 #include "pow.h"
 #include "primitives/transaction.h"
@@ -103,7 +103,7 @@ bool CMasternodeMiner::SelectMasternodeCoins(std::vector<COutput>& vCoins,
                 CMasternode mn(outpoint, myAddr, CPubKey()); // Will set pubkey from wallet later
                 if (mnodeman.Add(mn)) {
                     LogPrintf("CMasternodeMiner: Auto-registered masternode %s at IP %s\n",
-                             outpoint.ToStringShort(), myAddr.ToString());
+                             outpoint.ToString(), myAddr.ToString());
                 }
 
                 vCoins.push_back(out);

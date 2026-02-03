@@ -11,6 +11,7 @@
 #include "wallet/rpcwallet.h"
 #include "util.h"
 #include "utilmoneystr.h"  // For FormatMoney()
+#include "core_io.h"       // For ValueFromAmount()
 
 
 
@@ -56,7 +57,7 @@ UniValue masternode(const JSONRPCRequest& request)
             mnObj.pushKV("status", mn.GetStatus());
             mnObj.pushKV("protocol", mn.nProtocolVersion);
             mnObj.pushKV("lastseen", mn.nTimeLastSeen);
-            mnObj.pushKV("collateral", mn.outpoint.ToStringShort());
+            mnObj.pushKV("collateral", mn.outpoint.ToString());
 
             obj.pushKV(mn.outpoint.hash.ToString(), mnObj);
         }
