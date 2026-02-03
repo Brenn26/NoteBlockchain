@@ -82,7 +82,7 @@ void MasternodeList::updateMyNodeList()
     pwallet->AvailableCoins(vCoins);
 
     for (const auto& out : vCoins) {
-        if (out.tx->tx->vout[out.i].nValue == 200000 * COIN) {
+        if (out.tx->tx->vout[out.i].nValue == Params().GetConsensus().nMasternodeCollateral) {
             // Found potential collateral
             COutPoint outpoint(out.tx->tx->GetHash(), out.i);
 
@@ -163,7 +163,7 @@ void MasternodeList::on_startButton_clicked()
 
     bool foundCollateral = false;
     for (const auto& out : vCoins) {
-        if (out.tx->tx->vout[out.i].nValue == 200000 * COIN) {
+        if (out.tx->tx->vout[out.i].nValue == Params().GetConsensus().nMasternodeCollateral) {
             foundCollateral = true;
 
             COutPoint outpoint(out.tx->tx->GetHash(), out.i);

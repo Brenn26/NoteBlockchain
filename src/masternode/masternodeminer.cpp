@@ -116,6 +116,12 @@ bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
     if (!pindexPrev)
         return false;
 
+    // Check if wallet is unlocked for staking
+    if (pwallet->IsLocked()) {
+        // Wallet is locked, cannot stake
+        return false;
+    }
+
     // Get masternode coins
     std::vector<COutput> vCoins;
     if (!SelectMasternodeCoins(vCoins, params.nMasternodeCollateral, pwallet, params))
@@ -136,8 +142,9 @@ bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
             uint256 hashProofOfStake;
 
             // Get the block index where this coin was created
+            // coin.nDepth is confirmations, so we go back that many blocks from tip
             const CBlockIndex* pindexFrom = pindexPrev;
-            while (pindexFrom && pindexFrom->nHeight > coin.nDepth) {
+            for (int i = 0; i < coin.nDepth - 1 && pindexFrom; i++) {
                 pindexFrom = pindexFrom->pprev;
             }
 

@@ -96,7 +96,7 @@ UniValue masternode(const JSONRPCRequest& request)
         pwallet->AvailableCoins(vCoins);
 
         for (const auto& out : vCoins) {
-            if (out.tx->tx->vout[out.i].nValue == 200000 * COIN) {
+            if (out.tx->tx->vout[out.i].nValue == params.nMasternodeCollateral) {
                 COutPoint outpoint(out.tx->tx->GetHash(), out.i);
 
                 // Check if already registered
