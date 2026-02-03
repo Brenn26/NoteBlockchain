@@ -54,7 +54,8 @@ bool CMasternodeMiner::SelectMasternodeCoins(std::vector<COutput>& vCoins,
                                             const Consensus::Params& params)
 {
     std::vector<COutput> vAvailableCoins;
-    pwallet->AvailableCoins(vAvailableCoins, true, nullptr, MAX_MONEY, MAX_MONEY, MAX_MONEY, 0);
+    // Get all available coins (use default parameters)
+    pwallet->AvailableCoins(vAvailableCoins);
 
     LogPrintf("CMasternodeMiner: AvailableCoins returned %d coins, looking for %s\n",
              vAvailableCoins.size(), FormatMoney(params.nMasternodeCollateral));
