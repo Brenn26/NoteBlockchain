@@ -222,8 +222,9 @@ void MasternodeList::on_startButton_clicked()
     }
 
     if (!foundCollateral) {
+        QString collateralAmount = QString::fromStdString(FormatMoney(Params().GetConsensus().nMasternodeCollateral));
         QMessageBox::warning(this, tr("No Collateral"),
-            tr("No masternode collateral (200,000 NOTE) found in your wallet."),
+            tr("No masternode collateral (%1) found in your wallet.").arg(collateralAmount),
             QMessageBox::Ok, QMessageBox::Ok);
     }
 }

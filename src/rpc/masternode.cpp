@@ -91,6 +91,8 @@ UniValue masternode(const JSONRPCRequest& request)
 
         LOCK2(cs_main, pwallet->cs_wallet);
 
+        const Consensus::Params& params = Params().GetConsensus();
+
         // Find collateral
         std::vector<COutput> vCoins;
         pwallet->AvailableCoins(vCoins);
@@ -145,7 +147,8 @@ UniValue masternode(const JSONRPCRequest& request)
             }
         }
 
-        throw JSONRPCError(RPC_MISC_ERROR, "No masternode collateral (200,000 NOTE) found in wallet");
+        throw JSONRPCError(RPC_MISC_ERROR,
+            "No masternode collateral (" + FormatMoney(params.nMasternodeCollateral) + ") found in wallet");
     }
 
     if (strCommand == "help") {
