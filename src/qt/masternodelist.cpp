@@ -17,6 +17,7 @@
 #include "utilmoneystr.h"
 #include "keystore.h"
 #include "chainparams.h"
+#include "netbase.h"
 
 #include <QTimer>
 #include <QMessageBox>
@@ -103,7 +104,7 @@ void MasternodeList::updateMyNodeList()
                 int blocksStaked = 0;
                 for (const auto& entry : pwallet->mapWallet) {
                     const CWalletTx& wtx = entry.second;
-                    if (wtx.IsCoinStake() && wtx.hashBlock != uint256()) {
+                    if (wtx.tx->IsCoinStake() && wtx.hashBlock != uint256()) {
                         blocksStaked++;
                     }
                 }
@@ -189,7 +190,8 @@ void MasternodeList::on_startButton_clicked()
 
             // Create masternode entry
             // Note: In production, you'd need to get the actual IP:port from user
-            CService addr = CService("127.0.0.1", 8333);
+            CService addr;
+            Lookup("127.0.0.1:8333", addr, 8333, false);
             CMasternode mn(outpoint, addr, pubKey);
 
             if (mnodeman.Add(mn)) {
