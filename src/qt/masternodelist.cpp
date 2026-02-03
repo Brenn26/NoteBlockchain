@@ -100,17 +100,39 @@ void MasternodeList::updateMyNodeList()
                 CAmount masternodeReward = blockReward;  // Masternode gets full reward when staking
                 ui->myExpectedReward->setText(QString::fromStdString(FormatMoney(masternodeReward)));
 
-                // Calculate total rewards earned
-                // This is a simplified calculation - in production you'd track this in the wallet
+                // Calculate total rewards earned from PoS blocks
+                totalRewards = 0;
                 int blocksStaked = 0;
                 for (const auto& entry : pwallet->mapWallet) {
                     const CWalletTx& wtx = entry.second;
-                    if (wtx.tx->IsCoinStake() && wtx.hashBlock != uint256()) {
-                        blocksStaked++;
+                    if (wtx.tx->IsCoinStake() && wtx.GetDepthInMainChain() > 0) {
+                        // Calculate actual reward (output - input)
+                        CAmount nInput = 0;
+                        CAmount nOutput = 0;
+
+                        // Sum inputs
+                        for (const auto& txin : wtx.tx->vin) {
+                            const CWalletTx* prev = pwallet->GetWalletTx(txin.prevout.hash);
+                            if (prev && txin.prevout.n < prev->tx->vout.size()) {
+                                nInput += prev->tx->vout[txin.prevout.n].nValue;
+                            }
+                        }
+
+                        // Sum outputs (skip first output which is empty in coinstake)
+                        for (size_t i = 1; i < wtx.tx->vout.size(); i++) {
+                            if (pwallet->IsMine(wtx.tx->vout[i])) {
+                                nOutput += wtx.tx->vout[i].nValue;
+                            }
+                        }
+
+                        CAmount nReward = nOutput - nInput;
+                        if (nReward > 0) {
+                            totalRewards += nReward;
+                            blocksStaked++;
+                        }
                     }
                 }
-                totalRewards = blocksStaked * masternodeReward;
-                ui->myTotalRewards->setText(QString::fromStdString(FormatMoney(totalRewards)));
+                ui->myTotalRewards->setText(QString::fromStdString(FormatMoney(totalRewards) + " (" + std::to_string(blocksStaked) + " blocks)"));
 
                 break;
             }
@@ -128,8 +150,9 @@ void MasternodeList::updateNetworkList()
         return;
 
     // Update network statistics
-    int totalMasternodes = mnodeman.CountEnabled();
-    ui->networkMasternodeCount->setText(QString::number(totalMasternodes));
+    int totalMasternodes = mnodeman.size();
+    int enabledMasternodes = mnodeman.CountEnabled();
+    ui->networkMasternodeCount->setText(QString::number(enabledMasternodes) + " / " + QString::number(totalMasternodes) + " (enabled/total)");
 
     // Calculate next masternode payment
     int nBlockHeight = chainActive.Height();

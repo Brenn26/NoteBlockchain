@@ -31,9 +31,9 @@ UniValue masternode(const JSONRPCRequest& request)
             "\nArguments:\n"
             "1. \"command\"        (string, required) The command to execute\n"
             "\nAvailable commands:\n"
-            "  count        - Get total masternode count\n"
-            "  list         - List all masternodes\n"
-            "  status       - Get masternode staking status\n"
+            "  count        - Get network total and user's masternode count\n"
+            "  list         - List all masternodes on the network\n"
+            "  status       - Get masternode status (network and user's)\n"
             "  start        - Start your masternode\n"
             "  help         - Show detailed setup instructions\n"
             "\nExamples:\n"
@@ -45,8 +45,27 @@ UniValue masternode(const JSONRPCRequest& request)
 
     if (strCommand == "count") {
         UniValue obj(UniValue::VOBJ);
-        obj.pushKV("total", mnodeman.size());
-        obj.pushKV("enabled", mnodeman.CountEnabled());
+        obj.pushKV("network_total", mnodeman.size());
+        obj.pushKV("network_enabled", mnodeman.CountEnabled());
+
+        // Count user's masternodes
+        CWallet * const pwallet = GetWalletForJSONRPCRequest(request);
+        if (pwallet && EnsureWalletIsAvailable(pwallet, false)) {
+            LOCK2(cs_main, pwallet->cs_wallet);
+            int nMyMasternodes = 0;
+            std::vector<CMasternode> vMasternodes = mnodeman.GetFullMasternodeVector();
+            for (const auto& mn : vMasternodes) {
+                // Check if we own this masternode's collateral
+                const CWalletTx* wtx = pwallet->GetWalletTx(mn.outpoint.hash);
+                if (wtx && mn.outpoint.n < wtx->tx->vout.size()) {
+                    if (pwallet->IsMine(wtx->tx->vout[mn.outpoint.n])) {
+                        nMyMasternodes++;
+                    }
+                }
+            }
+            obj.pushKV("my_masternodes", nMyMasternodes);
+        }
+
         return obj;
     }
 
@@ -68,10 +87,36 @@ UniValue masternode(const JSONRPCRequest& request)
     }
 
     if (strCommand == "status") {
+        CWallet * const pwallet = GetWalletForJSONRPCRequest(request);
+        if (!EnsureWalletIsAvailable(pwallet, false))
+            return NullUniValue;
+
+        LOCK2(cs_main, pwallet->cs_wallet);
+
         UniValue obj(UniValue::VOBJ);
         obj.pushKV("staking_enabled", masternodeMiner.CanStake(Params()));
-        obj.pushKV("masternodes_total", mnodeman.size());
-        obj.pushKV("masternodes_enabled", mnodeman.CountEnabled());
+        obj.pushKV("masternodes_network_total", mnodeman.size());
+        obj.pushKV("masternodes_network_enabled", mnodeman.CountEnabled());
+
+        // Count user's masternodes
+        int nMyMasternodes = 0;
+        int nMyMasternodesEnabled = 0;
+        std::vector<CMasternode> vMasternodes = mnodeman.GetFullMasternodeVector();
+        for (const auto& mn : vMasternodes) {
+            // Check if we own this masternode's collateral
+            const CWalletTx* wtx = pwallet->GetWalletTx(mn.outpoint.hash);
+            if (wtx && mn.outpoint.n < wtx->tx->vout.size()) {
+                if (pwallet->IsMine(wtx->tx->vout[mn.outpoint.n])) {
+                    nMyMasternodes++;
+                    if (mn.GetStatus() == "ENABLED") {
+                        nMyMasternodesEnabled++;
+                    }
+                }
+            }
+        }
+        obj.pushKV("my_masternodes", nMyMasternodes);
+        obj.pushKV("my_masternodes_enabled", nMyMasternodesEnabled);
+
         obj.pushKV("block_height", chainActive.Height());
 
         const Consensus::Params& params = Params().GetConsensus();
@@ -255,8 +300,76 @@ UniValue getstakingstatus(const JSONRPCRequest& request)
 
     int64_t nExpectedTime = masternodeMiner.GetExpectedStakeTime(Params(), pwallet);
     obj.pushKV("expected_time", nExpectedTime);
-    obj.pushKV("masternode_count", mnodeman.CountEnabled());
+    obj.pushKV("masternode_count_network", mnodeman.size());
+    obj.pushKV("masternode_count_enabled", mnodeman.CountEnabled());
     obj.pushKV("block_height", chainActive.Height());
+
+    return obj;
+}
+
+UniValue getposrewards(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() != 0)
+        throw std::runtime_error(
+            "getposrewards\n"
+            "Returns total rewards earned from Proof-of-Stake blocks.\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"total_pos_rewards\": x.xxx,      (numeric) total rewards from PoS blocks\n"
+            "  \"pos_blocks_mined\": n,           (numeric) number of PoS blocks mined\n"
+            "  \"total_pos_rewards_formatted\": \"x.xxx COIN\", (string) formatted reward amount\n"
+            "}\n"
+            "\nExamples:\n"
+            + HelpExampleCli("getposrewards", "")
+            + HelpExampleRpc("getposrewards", "")
+        );
+
+    CWallet* pwallet = GetWalletForJSONRPCRequest(request);
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp))
+        return NullUniValue;
+
+    LOCK2(cs_main, pwallet->cs_wallet);
+
+    CAmount nTotalRewards = 0;
+    int nPosBlocks = 0;
+
+    // Iterate through all wallet transactions
+    for (const auto& pair : pwallet->mapWallet) {
+        const CWalletTx& wtx = pair.second;
+
+        // Check if this is a coinstake transaction (PoS block)
+        if (wtx.tx->IsCoinStake() && wtx.GetDepthInMainChain() > 0) {
+            // Calculate the reward (output - input)
+            CAmount nInput = 0;
+            CAmount nOutput = 0;
+
+            // Sum inputs
+            for (const auto& txin : wtx.tx->vin) {
+                const CWalletTx* prev = pwallet->GetWalletTx(txin.prevout.hash);
+                if (prev && txin.prevout.n < prev->tx->vout.size()) {
+                    nInput += prev->tx->vout[txin.prevout.n].nValue;
+                }
+            }
+
+            // Sum outputs (skip first output which is empty in coinstake)
+            for (size_t i = 1; i < wtx.tx->vout.size(); i++) {
+                if (pwallet->IsMine(wtx.tx->vout[i])) {
+                    nOutput += wtx.tx->vout[i].nValue;
+                }
+            }
+
+            CAmount nReward = nOutput - nInput;
+            if (nReward > 0) {
+                nTotalRewards += nReward;
+                nPosBlocks++;
+            }
+        }
+    }
+
+    UniValue obj(UniValue::VOBJ);
+    obj.pushKV("total_pos_rewards", ValueFromAmount(nTotalRewards));
+    obj.pushKV("pos_blocks_mined", nPosBlocks);
+    obj.pushKV("total_pos_rewards_formatted", FormatMoney(nTotalRewards) + " COIN");
 
     return obj;
 }
@@ -266,6 +379,7 @@ static const CRPCCommand commands[] =
   //  ------------------ ------------------------  -----------------------  ----------
     { "masternode",      "masternode",             &masternode,             {} },
     { "masternode",      "getstakingstatus",       &getstakingstatus,       {} },
+    { "masternode",      "getposrewards",          &getposrewards,          {} },
 };
 
 void RegisterMasternodeRPCCommands(CRPCTable &t)
