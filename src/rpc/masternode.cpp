@@ -125,7 +125,7 @@ UniValue masternode(const JSONRPCRequest& request)
                         "No external IP configured. Add 'externalip=YOUR.IP.ADDRESS' to noteblockchain.conf");
                 }
 
-                if (!Lookup(externalIP, addr, Params().GetDefaultPort(), false)) {
+                if (!Lookup(externalIP.c_str(), addr, Params().GetDefaultPort(), false)) {
                     throw JSONRPCError(RPC_MISC_ERROR, "Failed to lookup external IP address: " + externalIP);
                 }
 

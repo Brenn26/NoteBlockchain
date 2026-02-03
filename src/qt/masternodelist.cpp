@@ -200,7 +200,7 @@ void MasternodeList::on_startButton_clicked()
                 return;
             }
 
-            if (!Lookup(externalIP, addr, Params().GetDefaultPort(), false)) {
+            if (!Lookup(externalIP.c_str(), addr, Params().GetDefaultPort(), false)) {
                 QMessageBox::warning(this, tr("Configuration Error"),
                     tr("Failed to lookup external IP address: ") + QString::fromStdString(externalIP),
                     QMessageBox::Ok, QMessageBox::Ok);
