@@ -55,65 +55,52 @@ bool CMasternodeMiner::SelectMasternodeCoins(std::vector<COutput>& vCoins,
     std::vector<COutput> vAvailableCoins;
     pwallet->AvailableCoins(vAvailableCoins, true, nullptr, MAX_MONEY, MAX_MONEY, MAX_MONEY, 0);
 
-    // Get our external IP address (as seen by other nodes on the network)
+    // Get the external IP from config (same as GUI/RPC uses)
+    std::string externalIP = gArgs.GetArg("-externalip", "");
+    if (externalIP.empty()) {
+        LogPrintf("CMasternodeMiner: No external IP configured. Add 'externalip=YOUR.IP.ADDRESS' to noteblockchain.conf\n");
+        return false;
+    }
+
     CService myAddr;
-
-    // GetLocal returns address based on peer connections - prefer external
-    if (!GetLocal(myAddr, nullptr)) {
-        LogPrintf("CMasternodeMiner::SelectMasternodeCoins: Cannot determine external IP\n");
+    if (!Lookup(externalIP.c_str(), myAddr, Params().GetDefaultPort(), false)) {
+        LogPrintf("CMasternodeMiner: Failed to lookup external IP address: %s\n", externalIP);
         return false;
     }
 
-    // Reject private/internal IP addresses - must use public IP
-    if (myAddr.IsRFC1918() || myAddr.IsLocal() || myAddr.IsInternal()) {
-        LogPrintf("CMasternodeMiner::SelectMasternodeCoins: Cannot use internal IP %s - need public IP\n",
-                 myAddr.ToString());
-        LogPrintf("CMasternodeMiner: Please configure your external IP with -externalip=<public_ip>\n");
-        return false;
-    }
+    // Find masternodes that match BOTH our wallet UTXOs AND our configured external IP
+    for (const COutput& out : vAvailableCoins) {
+        if (out.tx->tx->vout[out.i].nValue == params.nMasternodeCollateral) {
+            COutPoint outpoint(out.tx->GetHash(), out.i);
 
-    // Check if our IP already has a masternode registered
-    if (mnodeman.HasIP(myAddr)) {
-        // Our IP is already registered, only return coins for that masternode
-        CMasternode* pmn = mnodeman.FindByIP(myAddr);
-        if (pmn) {
-            // Find the coin matching this masternode's outpoint
-            for (const COutput& out : vAvailableCoins) {
-                COutPoint outpoint(out.tx->GetHash(), out.i);
-                if (outpoint == pmn->outpoint) {
+            // Check if this UTXO is registered as a masternode
+            CMasternode* pmn = mnodeman.Find(outpoint);
+            if (pmn && pmn->IsEnabled()) {
+                // Check if this masternode is registered with OUR IP
+                if (pmn->addr == myAddr) {
+                    // Found our masternode (matching both UTXO and IP)
                     if (out.nDepth >= params.nMasternodeMinimumConfirmations) {
+                        LogPrintf("CMasternodeMiner: Using registered masternode %s at %s\n",
+                                 outpoint.ToString(), pmn->addr.ToString());
                         vCoins.push_back(out);
                         return true;
+                    } else {
+                        LogPrintf("CMasternodeMiner: Masternode %s needs %d more confirmations (has %d)\n",
+                                 outpoint.ToString(),
+                                 params.nMasternodeMinimumConfirmations - out.nDepth,
+                                 out.nDepth);
                     }
+                } else {
+                    LogPrintf("CMasternodeMiner: Found masternode %s but it's registered to %s (we are %s)\n",
+                             outpoint.ToString(), pmn->addr.ToString(), myAddr.ToString());
                 }
-            }
-        }
-        return false;
-    }
-
-    // No masternode registered for our IP yet - find eligible coins
-    for (const COutput& out : vAvailableCoins) {
-        // Check if this is masternode collateral (exact amount)
-        if (out.tx->tx->vout[out.i].nValue == params.nMasternodeCollateral) {
-            // Check maturity (minimum confirmations)
-            if (out.nDepth >= params.nMasternodeMinimumConfirmations) {
-                COutPoint outpoint(out.tx->GetHash(), out.i);
-
-                // Auto-register this masternode with our IP
-                CMasternode mn(outpoint, myAddr, CPubKey()); // Will set pubkey from wallet later
-                if (mnodeman.Add(mn)) {
-                    LogPrintf("CMasternodeMiner: Auto-registered masternode %s at IP %s\n",
-                             outpoint.ToString(), myAddr.ToString());
-                }
-
-                vCoins.push_back(out);
-                // Return first valid UTXO - one masternode per IP
-                return true;
             }
         }
     }
 
-    return !vCoins.empty();
+    LogPrintf("CMasternodeMiner: No active masternodes found matching IP %s\n", myAddr.ToString());
+    LogPrintf("CMasternodeMiner: Use 'masternode start' command to register a masternode\n");
+    return false;
 }
 
 bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
