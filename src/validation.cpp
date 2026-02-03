@@ -1987,7 +1987,7 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
     if (block.IsProofOfStake()) {
         // Verify the stake kernel
         uint256 hashProofOfStake;
-        if (!CheckProofOfStake(pindex->pprev, *block.vtx[1], pindex->nBits, hashProofOfStake, view, chainparams.GetConsensus()))
+        if (!CheckProofOfStake(pindex->pprev, *block.vtx[1], pindex->nBits, block.nTime, hashProofOfStake, view, chainparams.GetConsensus()))
             return state.DoS(100, error("ConnectBlock(): proof-of-stake check failed"), REJECT_INVALID, "bad-pos-stake");
 
         // Set the PoS flag and stake modifier

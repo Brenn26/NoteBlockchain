@@ -35,6 +35,7 @@ bool CheckStakeKernelHash(unsigned int nBits,
 bool CheckProofOfStake(const CBlockIndex* pindexPrev,
                        const CTransaction& tx,
                        unsigned int nBits,
+                       unsigned int nBlockTime,
                        uint256& hashProofOfStake,
                        CCoinsViewCache& view,
                        const Consensus::Params& params);

@@ -163,7 +163,6 @@ bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
                                    nTryTime, hashProofOfStake, params)) {
                 // Found valid stake!
                 CMutableTransaction txNewMut;
-                txNewMut.nTime = nTryTime;
                 nTxNewTime = nTryTime;
 
                 // Input: the masternode collateral

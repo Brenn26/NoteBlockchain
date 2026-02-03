@@ -93,9 +93,9 @@ void MasternodeList::updateMyNodeList()
                 ui->myMasternodeStatus->setText(QString::fromStdString(pmn->GetStatus()));
                 ui->myMasternodeAddress->setText(QString::fromStdString(pmn->addr.ToString()));
 
-                // Calculate expected reward (30% of block reward)
+                // Calculate expected reward per stake (full PoS block reward)
                 CAmount blockReward = GetBlockSubsidy(chainActive.Height() + 1, Params().GetConsensus());
-                CAmount masternodeReward = (blockReward * 30) / 100;
+                CAmount masternodeReward = blockReward;  // Masternode gets full reward when staking
                 ui->myExpectedReward->setText(QString::fromStdString(FormatMoney(masternodeReward)));
 
                 // Calculate total rewards earned

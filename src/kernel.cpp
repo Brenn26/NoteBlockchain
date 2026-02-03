@@ -101,6 +101,7 @@ bool CheckStakeKernelHash(unsigned int nBits,
 bool CheckProofOfStake(const CBlockIndex* pindexPrev,
                        const CTransaction& tx,
                        unsigned int nBits,
+                       unsigned int nBlockTime,
                        uint256& hashProofOfStake,
                        CCoinsViewCache& view,
                        const Consensus::Params& params)
@@ -132,21 +133,21 @@ bool CheckProofOfStake(const CBlockIndex* pindexPrev,
     CMutableTransaction mutableTxPrev;
     mutableTxPrev.vout.resize(txin.prevout.n + 1);
     mutableTxPrev.vout[txin.prevout.n] = coin.out;
-    mutableTxPrev.nTime = pindexFrom->nTime;
-    
+
     // Convert to immutable CTransaction for the check
     const CTransaction txPrev(mutableTxPrev);
 
-    // Verify the stake kernel hash
+    // Verify the stake kernel hash using block time
     return CheckStakeKernelHash(nBits, pindexFrom, txPrev, txin.prevout,
-                               tx.nTime, hashProofOfStake, params);
+                               nBlockTime, hashProofOfStake, params);
 }
 
 // Get the age of the stake in seconds
+// Note: Since transactions no longer have nTime, this function is deprecated
+// Stake age is now calculated based on UTXO creation block time
 int64_t GetStakeAge(const CTransaction& tx, unsigned int nTimeTx)
 {
-    if (tx.nTime > nTimeTx)
-        return 0;
-
-    return nTimeTx - tx.nTime;
+    // This function is kept for API compatibility but no longer uses tx.nTime
+    // Stake age should be calculated from UTXO block time instead
+    return 0;
 }
