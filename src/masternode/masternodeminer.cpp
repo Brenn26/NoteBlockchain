@@ -187,12 +187,14 @@ bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
                 const CKeyStore& keystore = *pwallet;
                 SignatureData sigdata;
 
-                if (!ProduceSignature(keystore, MutableTransactionSignatureCreator(&txNewMut, 0, params.nMasternodeCollateral, SIGHASH_ALL),
+                if (!ProduceSignature(MutableTransactionSignatureCreator(&keystore, &txNewMut, 0, params.nMasternodeCollateral, SIGHASH_ALL),
                                     wtx->tx->vout[coin.i].scriptPubKey, sigdata)) {
                     continue;
                 }
 
-                UpdateInput(txNewMut.vin[0], sigdata);
+                // Update transaction input with signature
+                txNewMut.vin[0].scriptSig = sigdata.scriptSig;
+                txNewMut.vin[0].scriptWitness = sigdata.scriptWitness;
 
                 txNew = CTransaction(txNewMut);
                 return true;

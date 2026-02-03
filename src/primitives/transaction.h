@@ -166,6 +166,13 @@ public:
         return (nValue == 0 && scriptPubKey.empty());
     }
 
+    // PoS: Set output to empty (for kernel marker)
+    void SetEmpty()
+    {
+        nValue = 0;
+        scriptPubKey.clear();
+    }
+
     friend bool operator==(const CTxOut& a, const CTxOut& b)
     {
         return (a.nValue       == b.nValue &&
