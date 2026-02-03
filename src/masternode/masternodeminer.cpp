@@ -146,6 +146,10 @@ bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
         // Try different timestamps (current time + up to 30 seconds into future)
         int64_t nCurrentTime = GetAdjustedTime();
 
+        LogPrintf("CMasternodeMiner: Attempting to stake coin %s:%d (value=%s, depth=%d)\n",
+                 wtx->GetHash().ToString().substr(0,10), coin.i,
+                 FormatMoney(coin.tx->tx->vout[coin.i].nValue), coin.nDepth);
+
         for (unsigned int nTryTime = nCurrentTime; nTryTime <= nCurrentTime + 30; nTryTime++) {
             // Check if this coin can stake at this time
             uint256 hashProofOfStake;
@@ -157,8 +161,10 @@ bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
                 pindexFrom = pindexFrom->pprev;
             }
 
-            if (!pindexFrom)
+            if (!pindexFrom) {
+                LogPrintf("CMasternodeMiner: Failed to find pindexFrom for coin\n");
                 continue;
+            }
 
             const CTransaction& txPrev = *wtx->tx;
             COutPoint prevout(wtx->GetHash(), coin.i);

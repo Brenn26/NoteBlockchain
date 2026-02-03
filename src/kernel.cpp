@@ -60,12 +60,16 @@ bool CheckStakeKernelHash(unsigned int nBits,
 
     // Check minimum stake age
     int64_t nStakeAge = nTimeTx - nTimeBlockFrom;
-    if (nStakeAge < params.nStakeMinAge)
+    if (nStakeAge < params.nStakeMinAge) {
+        LogPrint(BCLog::STAKING, "CheckStakeKernelHash: stake age %d < minimum %d\n", nStakeAge, params.nStakeMinAge);
         return false;
+    }
 
     // Check maximum stake age if set
-    if (params.nStakeMaxAge > 0 && nStakeAge > params.nStakeMaxAge)
+    if (params.nStakeMaxAge > 0 && nStakeAge > params.nStakeMaxAge) {
+        LogPrint(BCLog::STAKING, "CheckStakeKernelHash: stake age %d > maximum %d\n", nStakeAge, params.nStakeMaxAge);
         return false;
+    }
 
     // Get stake modifier from previous block
     uint64_t nStakeModifier = pindexFrom->nStakeModifier;
@@ -94,7 +98,13 @@ bool CheckStakeKernelHash(unsigned int nBits,
     arith_uint256 bnTargetProofOfStake = bnTarget * bnCoinDayWeight;
 
     // Check if hash meets target
-    return UintToArith256(hashProofOfStake) <= bnTargetProofOfStake;
+    bool fSuccess = UintToArith256(hashProofOfStake) <= bnTargetProofOfStake;
+
+    LogPrint(BCLog::STAKING, "CheckStakeKernelHash: age=%d weight=%s target=%s hash=%s result=%s\n",
+            nStakeAge, bnCoinDayWeight.ToString(), bnTargetProofOfStake.ToString(),
+            UintToArith256(hashProofOfStake).ToString(), fSuccess ? "SUCCESS" : "fail");
+
+    return fSuccess;
 }
 
 // Verify proof-of-stake for a coinstake transaction
