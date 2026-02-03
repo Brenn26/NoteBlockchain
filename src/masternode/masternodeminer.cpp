@@ -56,6 +56,9 @@ bool CMasternodeMiner::SelectMasternodeCoins(std::vector<COutput>& vCoins,
     std::vector<COutput> vAvailableCoins;
     pwallet->AvailableCoins(vAvailableCoins, true, nullptr, MAX_MONEY, MAX_MONEY, MAX_MONEY, 0);
 
+    LogPrintf("CMasternodeMiner: AvailableCoins returned %d coins, looking for %s\n",
+             vAvailableCoins.size(), FormatMoney(params.nMasternodeCollateral));
+
     // Get the external IP from config (same as GUI/RPC uses)
     std::string externalIP = gArgs.GetArg("-externalip", "");
     if (externalIP.empty()) {
@@ -69,8 +72,13 @@ bool CMasternodeMiner::SelectMasternodeCoins(std::vector<COutput>& vCoins,
         return false;
     }
 
+    LogPrintf("CMasternodeMiner: Our configured IP: %s\n", myAddr.ToString());
+
     // Find masternodes that match BOTH our wallet UTXOs AND our configured external IP
     for (const COutput& out : vAvailableCoins) {
+        LogPrintf("CMasternodeMiner:   Checking coin %s:%d value=%s depth=%d\n",
+                 out.tx->GetHash().ToString().substr(0,10), out.i,
+                 FormatMoney(out.tx->tx->vout[out.i].nValue), out.nDepth);
         if (out.tx->tx->vout[out.i].nValue == params.nMasternodeCollateral) {
             COutPoint outpoint(out.tx->GetHash(), out.i);
 
