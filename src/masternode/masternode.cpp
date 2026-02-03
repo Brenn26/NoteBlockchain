@@ -39,7 +39,6 @@ bool CMasternode::IsExpired() const
 
 void CMasternode::UpdateLastSeen(int64_t nTime)
 {
-    LOCK(cs);
     nTimeLastSeen = (nTime == 0) ? GetAdjustedTime() : nTime;
 }
 
