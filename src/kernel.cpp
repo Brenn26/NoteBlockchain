@@ -84,11 +84,11 @@ bool CheckStakeKernelHash(unsigned int nBits,
     arith_uint256 bnTarget;
     bnTarget.SetCompact(nBits);
 
-    // Apply PoS weight factor for 70/30 ratio
-    // PoS blocks should be ~30% as likely as PoW blocks
-    // So we make the target harder by multiplying by (nPoSTargetWeight / 1000)
-    // Example: 300/1000 = 0.3, making PoS 30% as likely
-    bnTarget = (bnTarget * params.nPoSTargetWeight) / 1000;
+    // Apply PoS weight factor to make PoS easier than PoW
+    // With nPoSTargetWeight = 300, we divide by (300/1000) = 0.3
+    // This makes PoS target 3.33x larger (easier) than PoW
+    // Example: 1000/300 = 3.33, making PoS easier to find blocks
+    bnTarget = (bnTarget * 1000) / params.nPoSTargetWeight;
 
     // Calculate weight based on coin value and age
     // More coins and longer age = higher weight = easier to stake
