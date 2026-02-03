@@ -12,6 +12,7 @@
 #include "util.h"
 #include "utilmoneystr.h"  // For FormatMoney()
 #include "core_io.h"       // For ValueFromAmount()
+#include "netbase.h"       // For Lookup()
 
 
 
@@ -23,7 +24,7 @@ UniValue masternode(const JSONRPCRequest& request)
 
     if (request.fHelp ||
         (strCommand != "count" && strCommand != "list" &&
-         strCommand != "status" && strCommand != "help"))
+         strCommand != "status" && strCommand != "start" && strCommand != "help"))
         throw std::runtime_error(
             "masternode \"command\"...\n"
             "Set of commands to execute masternode related actions\n"
@@ -33,9 +34,11 @@ UniValue masternode(const JSONRPCRequest& request)
             "  count        - Get total masternode count\n"
             "  list         - List all masternodes\n"
             "  status       - Get masternode staking status\n"
+            "  start        - Start your masternode\n"
             "  help         - Show detailed setup instructions\n"
             "\nExamples:\n"
             + HelpExampleCli("masternode", "count")
+            + HelpExampleCli("masternode", "start")
             + HelpExampleCli("masternode", "help")
             + HelpExampleRpc("masternode", "\"status\"")
         );
@@ -76,6 +79,73 @@ UniValue masternode(const JSONRPCRequest& request)
         obj.pushKV("collateral_required", ValueFromAmount(params.nMasternodeCollateral));
 
         return obj;
+    }
+
+    if (strCommand == "start") {
+        CWallet * const pwallet = GetWalletForJSONRPCRequest(request);
+        if (!EnsureWalletIsAvailable(pwallet, request.fHelp))
+            return NullUniValue;
+
+        if (pwallet->IsLocked())
+            throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Please unlock wallet to start masternode.");
+
+        LOCK2(cs_main, pwallet->cs_wallet);
+
+        // Find collateral
+        std::vector<COutput> vCoins;
+        pwallet->AvailableCoins(vCoins);
+
+        for (const auto& out : vCoins) {
+            if (out.tx->tx->vout[out.i].nValue == 200000 * COIN) {
+                COutPoint outpoint(out.tx->tx->GetHash(), out.i);
+
+                // Check if already registered
+                if (mnodeman.Has(outpoint)) {
+                    throw JSONRPCError(RPC_MISC_ERROR, "Masternode already registered");
+                }
+
+                // Get the address for this output
+                CTxDestination dest;
+                if (!ExtractDestination(out.tx->tx->vout[out.i].scriptPubKey, dest)) {
+                    continue;
+                }
+
+                // Get the public key
+                CKeyID keyID = GetKeyForDestination(*pwallet, dest);
+                CPubKey pubKey;
+                if (!pwallet->GetPubKey(keyID, pubKey)) {
+                    continue;
+                }
+
+                // Get external IP address from config
+                CService addr;
+                std::string externalIP = gArgs.GetArg("-externalip", "");
+                if (externalIP.empty()) {
+                    throw JSONRPCError(RPC_MISC_ERROR,
+                        "No external IP configured. Add 'externalip=YOUR.IP.ADDRESS' to noteblockchain.conf");
+                }
+
+                if (!Lookup(externalIP, addr, Params().GetDefaultPort(), false)) {
+                    throw JSONRPCError(RPC_MISC_ERROR, "Failed to lookup external IP address: " + externalIP);
+                }
+
+                // Create masternode
+                CMasternode mn(outpoint, addr, pubKey);
+
+                if (mnodeman.Add(mn)) {
+                    UniValue obj(UniValue::VOBJ);
+                    obj.pushKV("status", "success");
+                    obj.pushKV("message", "Masternode started successfully");
+                    obj.pushKV("address", addr.ToString());
+                    obj.pushKV("collateral", outpoint.ToString());
+                    return obj;
+                }
+
+                throw JSONRPCError(RPC_MISC_ERROR, "Failed to add masternode");
+            }
+        }
+
+        throw JSONRPCError(RPC_MISC_ERROR, "No masternode collateral (200,000 NOTE) found in wallet");
     }
 
     if (strCommand == "help") {

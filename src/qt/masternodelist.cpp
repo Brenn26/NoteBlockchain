@@ -18,6 +18,7 @@
 #include "keystore.h"
 #include "chainparams.h"
 #include "netbase.h"
+#include "util.h"
 
 #include <QTimer>
 #include <QMessageBox>
@@ -189,9 +190,23 @@ void MasternodeList::on_startButton_clicked()
             }
 
             // Create masternode entry
-            // Note: In production, you'd need to get the actual IP:port from user
+            // Get external IP from config file
             CService addr;
-            Lookup("127.0.0.1:8333", addr, 8333, false);
+            std::string externalIP = gArgs.GetArg("-externalip", "");
+            if (externalIP.empty()) {
+                QMessageBox::warning(this, tr("Configuration Error"),
+                    tr("No external IP configured. Please add 'externalip=YOUR.IP.ADDRESS' to noteblockchain.conf"),
+                    QMessageBox::Ok, QMessageBox::Ok);
+                return;
+            }
+
+            if (!Lookup(externalIP, addr, Params().GetDefaultPort(), false)) {
+                QMessageBox::warning(this, tr("Configuration Error"),
+                    tr("Failed to lookup external IP address: ") + QString::fromStdString(externalIP),
+                    QMessageBox::Ok, QMessageBox::Ok);
+                return;
+            }
+
             CMasternode mn(outpoint, addr, pubKey);
 
             if (mnodeman.Add(mn)) {
