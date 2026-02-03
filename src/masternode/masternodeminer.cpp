@@ -17,6 +17,7 @@
 #include "policy/policy.h"
 #include "pow.h"
 #include "primitives/transaction.h"
+#include "script/script.h"
 #include "script/sign.h"
 #include "timedata.h"
 #include "txmempool.h"
@@ -223,10 +224,12 @@ bool CMasternodeMiner::CreateBlock(CBlock& block, CWallet* pwallet, const CChain
 
     const Consensus::Params& params = chainparams.GetConsensus();
 
-    // Create coinbase (empty for PoS)
+    // Create coinbase (empty for PoS, but must include block height per BIP34)
     CMutableTransaction txCoinbase;
     txCoinbase.vin.resize(1);
     txCoinbase.vin[0].prevout.SetNull();
+    // BIP34: Coinbase must include block height in scriptSig
+    txCoinbase.vin[0].scriptSig = CScript() << (pindexPrev->nHeight + 1);
     txCoinbase.vout.resize(1);
     txCoinbase.vout[0].SetEmpty();
 
