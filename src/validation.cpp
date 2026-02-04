@@ -3087,11 +3087,6 @@ bool CheckBlock(const CBlock& block, CValidationState& state, const Consensus::P
     if (block.vtx.empty() || block.vtx.size() * WITNESS_SCALE_FACTOR > MAX_BLOCK_WEIGHT || ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * WITNESS_SCALE_FACTOR > MAX_BLOCK_WEIGHT)
         return state.DoS(100, false, REJECT_INVALID, "bad-blk-length", false, "size limits failed");
 
-    // PoS: Enforce nNonce=0 implies PoS block
-    // This prevents exploitation where fake blocks with nNonce=0 bypass header validation
-    if (block.nNonce == 0 && !block.IsProofOfStake())
-        return state.DoS(100, false, REJECT_INVALID, "bad-nonce-pos", false, "block with nNonce=0 must be PoS");
-
     // PoS: Enforce PoS blocks must have nNonce=0
     // This ensures PoS blocks are properly identified at header level
     if (block.IsProofOfStake() && block.nNonce != 0)

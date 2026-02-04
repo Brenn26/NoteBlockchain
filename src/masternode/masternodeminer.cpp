@@ -184,12 +184,16 @@ bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
                 CAmount nReward = GetBlockSubsidy(pindexPrev->nHeight + 1, params);
 
                 // Output 0: empty (kernel marker)
-                txNewMut.vout.resize(2);
+                txNewMut.vout.resize(3);
                 txNewMut.vout[0].SetEmpty();
 
-                // Output 1: return collateral + reward to same address
-                txNewMut.vout[1].nValue = params.nMasternodeCollateral + nReward;
+                // Output 1: return collateral to same address
+                txNewMut.vout[1].nValue = params.nMasternodeCollateral;
                 txNewMut.vout[1].scriptPubKey = wtx->tx->vout[coin.i].scriptPubKey;
+
+                // Output 2: stake reward to same address
+                txNewMut.vout[2].nValue = nReward;
+                txNewMut.vout[2].scriptPubKey = wtx->tx->vout[coin.i].scriptPubKey;
 
                 // Sign the transaction
                 const CKeyStore& keystore = *pwallet;

@@ -234,7 +234,10 @@ bool Consensus::CheckTxInputs(const CTransaction& tx, CValidationState& state, c
     }
 
     const CAmount value_out = tx.GetValueOut();
-    if (nValueIn < value_out) {
+
+    // PoS: Coinstake transactions are allowed to create coins (the block reward)
+    // The actual reward validation happens in ConnectBlock
+    if (!tx.IsCoinStake() && nValueIn < value_out) {
         return state.DoS(100, false, REJECT_INVALID, "bad-txns-in-belowout", false,
             strprintf("value in (%s) < value out (%s)", FormatMoney(nValueIn), FormatMoney(value_out)));
     }
