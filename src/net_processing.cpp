@@ -1115,8 +1115,12 @@ void static ProcessGetBlockData(CNode* pfrom, const Consensus::Params& consensus
         } else {
             // Send block from disk
             std::shared_ptr<CBlock> pblockRead = std::make_shared<CBlock>();
-            if (!ReadBlockFromDisk(*pblockRead, (*mi).second, consensusParams))
-                assert(!"cannot load block from disk");
+            if (!ReadBlockFromDisk(*pblockRead, (*mi).second, consensusParams)) {
+                // Block should be on disk but isn't - database corruption or disk issue
+                LogPrintf("ERROR: Cannot load block %s from disk (height=%d, status=%d)\n",
+                         inv.hash.ToString(), (*mi).second->nHeight, (*mi).second->nStatus);
+                return; // Don't send the block, don't crash
+            }
             pblock = pblockRead;
         }
         if (inv.type == MSG_BLOCK)

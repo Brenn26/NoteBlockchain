@@ -232,6 +232,18 @@ void MasternodeList::on_startButton_clicked()
                 return;
             }
 
+            // Check if this IP is already registered
+            // If so, remove the old entry (with spent outpoint) and update with new one
+            if (mnodeman.HasIP(addr)) {
+                CMasternode* existingMN = mnodeman.FindByIP(addr);
+                if (existingMN) {
+                    // Remove the old entry
+                    mnodeman.Remove(existingMN->outpoint);
+                    LogPrintf("Masternode: Updating %s with new collateral %s (old: %s)\n",
+                             addr.ToString(), outpoint.ToString(), existingMN->outpoint.ToString());
+                }
+            }
+
             CMasternode mn(outpoint, addr, pubKey);
 
             if (mnodeman.Add(mn)) {
