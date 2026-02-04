@@ -30,6 +30,8 @@
 #include "validation.h"
 #include "validationinterface.h"
 #include "wallet/wallet.h"
+#include <netmessagemaker.h>
+
 
 #include <boost/thread.hpp>
 
