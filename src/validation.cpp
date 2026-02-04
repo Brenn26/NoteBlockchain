@@ -1913,16 +1913,13 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
 
     CCheckQueueControl<CScriptCheck> control(fScriptChecks && nScriptCheckThreads ? &scriptcheckqueue : nullptr);
 
-    // PoS: Verify proof-of-stake BEFORE processing transactions
+    // PoS: Verify stake kernel hash BEFORE processing transactions
     // This must be done before UpdateCoins removes the staked UTXO from the view
+    // Note: We validate the kernel here but defer setting PoS flags until after all validation
+    uint256 hashProofOfStake;
     if (block.IsProofOfStake()) {
-        uint256 hashProofOfStake;
         if (!CheckProofOfStake(pindex->pprev, *block.vtx[1], pindex->nBits, block.nTime, hashProofOfStake, view, chainparams.GetConsensus()))
             return state.DoS(100, error("ConnectBlock(): proof-of-stake check failed"), REJECT_INVALID, "bad-pos-stake");
-
-        // Set the PoS flag and stake modifier
-        pindex->SetProofOfStake();
-        ComputeNextStakeModifier(pindex->pprev, pindex->nStakeModifier);
     }
 
     std::vector<int> prevheights;
@@ -2032,6 +2029,10 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
                 }
             }
         }
+
+        // All PoS validation passed - set the PoS flag and compute stake modifier
+        pindex->SetProofOfStake();
+        ComputeNextStakeModifier(pindex->pprev, pindex->nStakeModifier);
     } else {
         // PoW: Validate coinbase reward
         if (block.vtx[0]->GetValueOut() > blockReward)
