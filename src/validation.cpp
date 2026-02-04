@@ -1913,6 +1913,18 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
 
     CCheckQueueControl<CScriptCheck> control(fScriptChecks && nScriptCheckThreads ? &scriptcheckqueue : nullptr);
 
+    // PoS: Verify proof-of-stake BEFORE processing transactions
+    // This must be done before UpdateCoins removes the staked UTXO from the view
+    if (block.IsProofOfStake()) {
+        uint256 hashProofOfStake;
+        if (!CheckProofOfStake(pindex->pprev, *block.vtx[1], pindex->nBits, block.nTime, hashProofOfStake, view, chainparams.GetConsensus()))
+            return state.DoS(100, error("ConnectBlock(): proof-of-stake check failed"), REJECT_INVALID, "bad-pos-stake");
+
+        // Set the PoS flag and stake modifier
+        pindex->SetProofOfStake();
+        ComputeNextStakeModifier(pindex->pprev, pindex->nStakeModifier);
+    }
+
     std::vector<int> prevheights;
     CAmount nFees = 0;
     int nInputs = 0;
@@ -1983,17 +1995,8 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
 
     CAmount blockReward = nFees + GetBlockSubsidy(pindex->nHeight, chainparams.GetConsensus());
 
-    // PoS: Different validation for Proof-of-Stake blocks
+    // PoS: Verify coinstake outputs and rewards
     if (block.IsProofOfStake()) {
-        // Verify the stake kernel
-        uint256 hashProofOfStake;
-        if (!CheckProofOfStake(pindex->pprev, *block.vtx[1], pindex->nBits, block.nTime, hashProofOfStake, view, chainparams.GetConsensus()))
-            return state.DoS(100, error("ConnectBlock(): proof-of-stake check failed"), REJECT_INVALID, "bad-pos-stake");
-
-        // Set the PoS flag and stake modifier
-        pindex->SetProofOfStake();
-        ComputeNextStakeModifier(pindex->pprev, pindex->nStakeModifier);
-
         // Verify coinstake reward (output 2 is the reward)
         if (block.vtx[1]->vout.size() < 3)
             return state.DoS(100, error("ConnectBlock(): coinstake has insufficient outputs"), REJECT_INVALID, "bad-pos-outputs");
