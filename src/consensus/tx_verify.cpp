@@ -243,7 +243,8 @@ bool Consensus::CheckTxInputs(const CTransaction& tx, CValidationState& state, c
     }
 
     // Tally transaction fees
-    const CAmount txfee_aux = nValueIn - value_out;
+    // PoS: Coinstake transactions create coins (negative fee), so set fee to 0
+    const CAmount txfee_aux = tx.IsCoinStake() ? 0 : nValueIn - value_out;
     if (!MoneyRange(txfee_aux)) {
         return state.DoS(100, false, REJECT_INVALID, "bad-txns-fee-outofrange");
     }
