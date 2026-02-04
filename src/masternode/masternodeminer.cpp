@@ -17,8 +17,11 @@
 #include "policy/policy.h"
 #include "pow.h"
 #include "primitives/transaction.h"
+#include "primitives/block.h"
 #include "script/script.h"
 #include "script/sign.h"
+#include "script/standard.h"
+#include "keystore.h"
 #include "timedata.h"
 #include "txmempool.h"
 #include "util.h"
@@ -228,6 +231,17 @@ bool CMasternodeMiner::CreateBlock(CBlock& block, CWallet* pwallet, const CChain
 
     const Consensus::Params& params = chainparams.GetConsensus();
 
+    // Create a temporary block header to calculate the next difficulty target
+    // This is important: we need to use the adjusted difficulty for stake validation,
+    // not the previous block's difficulty
+    CBlockHeader tempHeader;
+    tempHeader.nVersion = ComputeBlockVersion(pindexPrev, params);
+    tempHeader.hashPrevBlock = pindexPrev->GetBlockHash();
+    tempHeader.nTime = GetAdjustedTime();
+
+    // Calculate the next difficulty target (adjusts based on block times)
+    unsigned int nBits = GetNextWorkRequired(pindexPrev, &tempHeader, params);
+
     // Create coinbase (empty for PoS, but must include block height per BIP34)
     CMutableTransaction txCoinbase;
     txCoinbase.vin.resize(1);
@@ -237,11 +251,12 @@ bool CMasternodeMiner::CreateBlock(CBlock& block, CWallet* pwallet, const CChain
     txCoinbase.vout.resize(1);
     txCoinbase.vout[0].SetEmpty();
 
-    // Create coinstake
+    // Create coinstake using the ADJUSTED difficulty (not previous block's difficulty)
+    // This allows PoS to benefit from difficulty decreases when blocks are slow
     CMutableTransaction txCoinstake;
     unsigned int nTxNewTime;
 
-    if (!CreateCoinStake(chainparams, pwallet, pindexPrev->nBits, txCoinstake, nTxNewTime))
+    if (!CreateCoinStake(chainparams, pwallet, nBits, txCoinstake, nTxNewTime))
         return false;
 
     // Assemble block
@@ -256,7 +271,7 @@ bool CMasternodeMiner::CreateBlock(CBlock& block, CWallet* pwallet, const CChain
     block.nVersion = ComputeBlockVersion(pindexPrev, params);
     block.hashPrevBlock = pindexPrev->GetBlockHash();
     block.nTime = nTxNewTime;
-    block.nBits = GetNextWorkRequired(pindexPrev, &block, params);
+    block.nBits = nBits;  // Use the pre-calculated adjusted difficulty
     block.nNonce = 0; // PoS doesn't need nonce
     block.hashMerkleRoot = BlockMerkleRoot(block);
 
@@ -282,10 +297,17 @@ void ThreadStakeMinter(CWallet* pwallet)
 {
     LogPrintf("ThreadStakeMinter started\n");
 
+    int nCleanupCounter = 0;
     try {
         while (true) {
             if (ShutdownRequested())
                 break;
+
+            // Periodically clean up expired masternodes (every 60 iterations = ~1 minute)
+            if (++nCleanupCounter >= 60) {
+                mnodeman.CheckAndRemove();
+                nCleanupCounter = 0;
+            }
 
             // Check if we should stake
             if (!masternodeMiner.CanStake(Params())) {
@@ -304,6 +326,51 @@ void ThreadStakeMinter(CWallet* pwallet)
                     if (fNewBlock) {
                         LogPrintf("ThreadStakeMinter: PoS block accepted! Height=%d Hash=%s\n",
                                  chainActive.Height(), block.GetHash().ToString());
+
+                        // Automatically re-register masternode with new collateral UTXO
+                        // This keeps the masternode enabled without user intervention
+                        const CTransaction& coinstake = *block.vtx[1];
+                        COutPoint newCollateralOutpoint(coinstake.GetHash(), 1); // Output 1 is the collateral
+
+                        // Get external IP from config
+                        std::string externalIP = gArgs.GetArg("-externalip", "");
+                        if (!externalIP.empty()) {
+                            CService addr;
+                            if (Lookup(externalIP.c_str(), addr, Params().GetDefaultPort(), false)) {
+                                // Get the pubkey for the collateral address
+                                CTxDestination dest;
+                                if (ExtractDestination(coinstake.vout[1].scriptPubKey, dest)) {
+                                    CKeyID keyID = GetKeyForDestination(*pwallet, dest);
+                                    CPubKey pubKey;
+                                    if (pwallet->GetPubKey(keyID, pubKey)) {
+                                        // Remove old masternode entry with same IP (if exists)
+                                        if (mnodeman.HasIP(addr)) {
+                                            CMasternode* existingMN = mnodeman.FindByIP(addr);
+                                            if (existingMN) {
+                                                mnodeman.Remove(existingMN->outpoint);
+                                                LogPrintf("ThreadStakeMinter: Removed old masternode entry %s\n",
+                                                         existingMN->outpoint.ToString());
+                                            }
+                                        }
+
+                                        // Create and add new masternode entry
+                                        CMasternode mn(newCollateralOutpoint, addr, pubKey);
+                                        if (mnodeman.Add(mn)) {
+                                            LogPrintf("ThreadStakeMinter: Auto-registered masternode with new collateral %s\n",
+                                                     newCollateralOutpoint.ToString());
+
+                                            // Broadcast to network
+                                            if (g_connman) {
+                                                g_connman->ForEachNode([&mn](CNode* pnode) {
+                                                    g_connman->PushMessage(pnode, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::MNANNOUNCE, mn));
+                                                });
+                                                LogPrintf("ThreadStakeMinter: Broadcast updated masternode to network\n");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

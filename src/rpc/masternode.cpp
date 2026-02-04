@@ -47,7 +47,7 @@ UniValue masternode(const JSONRPCRequest& request)
 
     if (strCommand == "count") {
         UniValue obj(UniValue::VOBJ);
-        obj.pushKV("network_total", mnodeman.size());
+        obj.pushKV("network_total", mnodeman.CountEnabled());  // Only count active masternodes
         obj.pushKV("network_enabled", mnodeman.CountEnabled());
 
         // Count user's masternodes
@@ -97,7 +97,7 @@ UniValue masternode(const JSONRPCRequest& request)
 
         UniValue obj(UniValue::VOBJ);
         obj.pushKV("staking_enabled", masternodeMiner.CanStake(Params()));
-        obj.pushKV("masternodes_network_total", mnodeman.size());
+        obj.pushKV("masternodes_network_total", mnodeman.CountEnabled());  // Only count active masternodes
         obj.pushKV("masternodes_network_enabled", mnodeman.CountEnabled());
 
         // Count user's masternodes
@@ -322,7 +322,7 @@ UniValue getstakingstatus(const JSONRPCRequest& request)
 
     int64_t nExpectedTime = masternodeMiner.GetExpectedStakeTime(Params(), pwallet);
     obj.pushKV("expected_time", nExpectedTime);
-    obj.pushKV("masternode_count_network", mnodeman.size());
+    obj.pushKV("masternode_count_network", mnodeman.CountEnabled());  // Only count active masternodes
     obj.pushKV("masternode_count_enabled", mnodeman.CountEnabled());
     obj.pushKV("block_height", chainActive.Height());
 

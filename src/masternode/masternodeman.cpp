@@ -55,7 +55,7 @@ bool CMasternodeMan::HasIP(const CService& addr)
 {
     LOCK(cs);
     for (const auto& pair : mapMasternodes) {
-        if (pair.second.addr == addr && pair.second.IsEnabled()) {
+        if (pair.second.addr == addr) {
             return true;
         }
     }
@@ -66,7 +66,7 @@ CMasternode* CMasternodeMan::FindByIP(const CService& addr)
 {
     LOCK(cs);
     for (auto& pair : mapMasternodes) {
-        if (pair.second.addr == addr && pair.second.IsEnabled()) {
+        if (pair.second.addr == addr) {
             return &pair.second;
         }
     }

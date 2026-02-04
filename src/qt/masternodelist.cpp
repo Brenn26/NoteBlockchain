@@ -151,10 +151,9 @@ void MasternodeList::updateNetworkList()
     if (!clientModel)
         return;
 
-    // Update network statistics
-    int totalMasternodes = mnodeman.size();
+    // Update network statistics - only show active masternodes
     int enabledMasternodes = mnodeman.CountEnabled();
-    ui->networkMasternodeCount->setText(QString::number(enabledMasternodes) + " / " + QString::number(totalMasternodes) + " (enabled/total)");
+    ui->networkMasternodeCount->setText(QString::number(enabledMasternodes));
 
     // Calculate next masternode payment
     int nBlockHeight = chainActive.Height();
