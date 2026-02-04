@@ -4,10 +4,12 @@
 
 #include "masternodeman.h"
 #include "clientversion.h"
+#include "coins.h"
 #include "fs.h"
 #include "streams.h"
 #include "util.h"
 #include "utiltime.h"
+#include "validation.h"
 
 CMasternodeMan mnodeman;
 
@@ -132,8 +134,21 @@ void CMasternodeMan::CheckAndRemove()
     std::vector<COutPoint> toRemove;
 
     for (auto& pair : mapMasternodes) {
+        // Remove if expired
         if (pair.second.IsExpired()) {
             toRemove.push_back(pair.first);
+            LogPrintf("CMasternodeMan::CheckAndRemove: Removing expired masternode %s\n",
+                     pair.first.ToString());
+            continue;
+        }
+
+        // Remove if UTXO is spent (check coins database)
+        // This prevents counting masternodes with spent collateral after restaking
+        Coin coin;
+        if (!pcoinsTip || !pcoinsTip->GetCoin(pair.first, coin) || coin.IsSpent()) {
+            toRemove.push_back(pair.first);
+            LogPrintf("CMasternodeMan::CheckAndRemove: Removing masternode %s with spent/missing UTXO\n",
+                     pair.first.ToString());
         }
     }
 
@@ -142,7 +157,7 @@ void CMasternodeMan::CheckAndRemove()
     }
 
     if (!toRemove.empty()) {
-        LogPrintf("CMasternodeMan::CheckAndRemove: Removed %d expired masternodes\n", toRemove.size());
+        LogPrintf("CMasternodeMan::CheckAndRemove: Removed %d invalid masternodes\n", toRemove.size());
     }
 }
 

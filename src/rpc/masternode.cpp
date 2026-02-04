@@ -140,6 +140,10 @@ UniValue masternode(const JSONRPCRequest& request)
 
         const Consensus::Params& params = Params().GetConsensus();
 
+        // Clean up any masternodes with spent UTXOs first
+        // This prevents double-counting when re-registering after restaking
+        mnodeman.CheckAndRemove();
+
         // Find collateral
         std::vector<COutput> vCoins;
         pwallet->AvailableCoins(vCoins);

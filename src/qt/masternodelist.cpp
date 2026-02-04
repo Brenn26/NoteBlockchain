@@ -181,6 +181,10 @@ void MasternodeList::on_startButton_clicked()
         return;
     }
 
+    // Clean up any masternodes with spent UTXOs first
+    // This prevents double-counting when re-registering after restaking
+    mnodeman.CheckAndRemove();
+
     // Try to find collateral and start masternode
     std::vector<COutput> vCoins;
     pwallet->AvailableCoins(vCoins);
