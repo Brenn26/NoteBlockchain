@@ -3986,7 +3986,10 @@ int CMerkleTx::GetDepthInMainChain(const CBlockIndex*& pindexRet) const
 
 int CMerkleTx::GetBlocksToMaturity() const
 {
-    if (!IsCoinBase())
+    // Both coinbase and coinstake outputs need to mature before spending
+    // This prevents double-spend attacks where the spent UTXO might still
+    // appear available before the wallet fully updates
+    if (!IsCoinBase() && !tx->IsCoinStake())
         return 0;
     return std::max(0, (COINBASE_MATURITY + 1) - GetDepthInMainChain());
 }

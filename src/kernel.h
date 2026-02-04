@@ -31,7 +31,7 @@ bool CheckStakeKernelHash(unsigned int nBits,
                           const Consensus::Params& params);
 
 // Check stake kernel hash with target adjusted for competing PoW/PoS
-// Uses nPoSTargetWeight to achieve 60/40 PoW/PoS ratio
+// Uses nPoSTargetWeight (10x multiplier) to allow PoS to compete with PoW
 bool CheckProofOfStake(const CBlockIndex* pindexPrev,
                        const CTransaction& tx,
                        unsigned int nBits,

@@ -8,6 +8,7 @@
 #include "chain.h"
 #include "chainparams.h"
 #include "coins.h"
+#include "consensus/consensus.h"
 #include "net.h"
 #include "netbase.h"
 #include "consensus/merkle.h"
@@ -328,51 +329,10 @@ void ThreadStakeMinter(CWallet* pwallet)
                     if (fNewBlock) {
                         LogPrintf("ThreadStakeMinter: PoS block accepted! Height=%d Hash=%s\n",
                                  chainActive.Height(), block.GetHash().ToString());
-
-                        // Automatically re-register masternode with new collateral UTXO
-                        // This keeps the masternode enabled without user intervention
-                        const CTransaction& coinstake = *block.vtx[1];
-                        COutPoint newCollateralOutpoint(coinstake.GetHash(), 1); // Output 1 is the collateral
-
-                        // Get external IP from config
-                        std::string externalIP = gArgs.GetArg("-externalip", "");
-                        if (!externalIP.empty()) {
-                            CService addr;
-                            if (Lookup(externalIP.c_str(), addr, Params().GetDefaultPort(), false)) {
-                                // Get the pubkey for the collateral address
-                                CTxDestination dest;
-                                if (ExtractDestination(coinstake.vout[1].scriptPubKey, dest)) {
-                                    CKeyID keyID = GetKeyForDestination(*pwallet, dest);
-                                    CPubKey pubKey;
-                                    if (pwallet->GetPubKey(keyID, pubKey)) {
-                                        // Remove old masternode entry with same IP (if exists)
-                                        if (mnodeman.HasIP(addr)) {
-                                            CMasternode* existingMN = mnodeman.FindByIP(addr);
-                                            if (existingMN) {
-                                                mnodeman.Remove(existingMN->outpoint);
-                                                LogPrintf("ThreadStakeMinter: Removed old masternode entry %s\n",
-                                                         existingMN->outpoint.ToString());
-                                            }
-                                        }
-
-                                        // Create and add new masternode entry
-                                        CMasternode mn(newCollateralOutpoint, addr, pubKey);
-                                        if (mnodeman.Add(mn)) {
-                                            LogPrintf("ThreadStakeMinter: Auto-registered masternode with new collateral %s\n",
-                                                     newCollateralOutpoint.ToString());
-
-                                            // Broadcast to network
-                                            if (g_connman) {
-                                                g_connman->ForEachNode([&mn](CNode* pnode) {
-                                                    g_connman->PushMessage(pnode, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::MNANNOUNCE, mn));
-                                                });
-                                                LogPrintf("ThreadStakeMinter: Broadcast updated masternode to network\n");
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        LogPrintf("ThreadStakeMinter: Coinstake output must mature for %d blocks before re-registering masternode\n",
+                                 COINBASE_MATURITY);
+                        LogPrintf("ThreadStakeMinter: Use 'masternode start' command after %d confirmations to re-enable staking\n",
+                                 COINBASE_MATURITY);
                     }
                 }
             }

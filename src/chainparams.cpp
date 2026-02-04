@@ -134,7 +134,9 @@ public:
         consensus.fAllowPoSBlocks = true;                 // Enable PoS competition
         consensus.nStakeMinAge = 1 * 60 * 60;             // 1 hour minimum stake age
         consensus.nStakeMaxAge = 0;                       // No maximum age
-        consensus.nPoSTargetWeight = 400;                 // 40% target (400/1000 = 0.4) - Results in ~60% PoW / ~40% PoS
+        consensus.nPoSTargetWeight = 100;                 // PoS weight: 100 = 10x multiplier (1000/100)
+                                                          // Makes PoS significantly easier to compete with PoW
+                                                          // Target: ~60% PoW / ~40% PoS in practice
         // Block reward: Uses GetBlockSubsidy() - 4756 coins initially, decays 80% per year
         /* End PoS params */
 
@@ -275,7 +277,8 @@ public:
         consensus.fAllowPoSBlocks = true;
         consensus.nStakeMinAge = 10 * 60;                 // 10 minutes for testing
         consensus.nStakeMaxAge = 0;
-        consensus.nPoSTargetWeight = 400;                 // 40% target - Results in ~60% PoW / ~40% PoS
+        consensus.nPoSTargetWeight = 100;                 // PoS weight: 100 = 10x multiplier
+                                                          // Target: ~60% PoW / ~40% PoS
         /* End params */
 
         pchMessageStart[0] = 0xda;
@@ -379,7 +382,8 @@ public:
         consensus.fAllowPoSBlocks = true;
         consensus.nStakeMinAge = 60;                      // 1 minute for testing
         consensus.nStakeMaxAge = 0;
-        consensus.nPoSTargetWeight = 400;                 // 40% target - Results in ~60% PoW / ~40% PoS
+        consensus.nPoSTargetWeight = 100;                 // PoS weight: 100 = 10x multiplier
+                                                          // Target: ~60% PoW / ~40% PoS
         /* End params */
 
         pchMessageStart[0] = 0xad;

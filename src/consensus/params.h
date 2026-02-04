@@ -96,7 +96,7 @@ struct Params {
     bool fAllowPoSBlocks;                   // Enable PoS blocks to compete with PoW
     int64_t nStakeMinAge;                   // Minimum age before coins can stake (seconds)
     int64_t nStakeMaxAge;                   // Maximum stake age (0 = no maximum)
-    unsigned int nPoSTargetWeight;          // PoS weight factor (400 = 40% target, resulting in ~60/40 PoW/PoS split)
+    unsigned int nPoSTargetWeight;          // PoS weight factor (100 = 10x multiplier, 1000/100 = 10x easier than PoW)
     // Note: Block reward uses GetBlockSubsidy() - same dynamic reward for both PoW and PoS
 
 };
