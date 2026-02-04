@@ -124,8 +124,11 @@ bool CheckProofOfStake(const CBlockIndex* pindexPrev,
 
     // Get the previous transaction output
     Coin coin;
-    if (!view.GetCoin(txin.prevout, coin))
+    if (!view.GetCoin(txin.prevout, coin)) {
+        LogPrintf("CheckProofOfStake: Looking for UTXO %s but not found in view\n", txin.prevout.ToString());
         return error("CheckProofOfStake: input not found in UTXO set");
+    }
+    LogPrintf("CheckProofOfStake: Found UTXO %s in view\n", txin.prevout.ToString());
 
     // Get the block containing the input transaction
     const CBlockIndex* pindexFrom = nullptr;
