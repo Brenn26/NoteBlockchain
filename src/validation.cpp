@@ -3087,6 +3087,16 @@ bool CheckBlock(const CBlock& block, CValidationState& state, const Consensus::P
     if (block.vtx.empty() || block.vtx.size() * WITNESS_SCALE_FACTOR > MAX_BLOCK_WEIGHT || ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * WITNESS_SCALE_FACTOR > MAX_BLOCK_WEIGHT)
         return state.DoS(100, false, REJECT_INVALID, "bad-blk-length", false, "size limits failed");
 
+    // PoS: Enforce nNonce=0 implies PoS block
+    // This prevents exploitation where fake blocks with nNonce=0 bypass header validation
+    if (block.nNonce == 0 && !block.IsProofOfStake())
+        return state.DoS(100, false, REJECT_INVALID, "bad-nonce-pos", false, "block with nNonce=0 must be PoS");
+
+    // PoS: Enforce PoS blocks must have nNonce=0
+    // This ensures PoS blocks are properly identified at header level
+    if (block.IsProofOfStake() && block.nNonce != 0)
+        return state.DoS(100, false, REJECT_INVALID, "bad-pos-nonce", false, "PoS block must have nNonce=0");
+
     // PoS: Check if this is a Proof-of-Stake block
     if (block.IsProofOfStake()) {
         // PoS blocks require at least 2 transactions (coinbase + coinstake)
@@ -3354,7 +3364,10 @@ bool CChainState::AcceptBlockHeader(const CBlockHeader& block, CValidationState&
             return true;
         }
 
-        if (!CheckBlockHeader(block, state, chainparams.GetConsensus()))
+        // PoS blocks set nNonce=0, so we can use this to detect them at header level
+        // Only skip PoW check if nNonce is 0 (likely PoS block)
+        bool fCheckPOW = (block.nNonce != 0);
+        if (!CheckBlockHeader(block, state, chainparams.GetConsensus(), fCheckPOW))
             return error("%s: Consensus::CheckBlockHeader: %s, %s", __func__, hash.ToString(), FormatStateMessage(state));
 
         // Get prev block index
