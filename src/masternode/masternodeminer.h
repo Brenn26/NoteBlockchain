@@ -22,8 +22,11 @@ namespace Consensus {
  */
 class CMasternodeMiner
 {
+private:
+    bool fStakingEnabled;
+
 public:
-    CMasternodeMiner() {}
+    CMasternodeMiner() : fStakingEnabled(false) {}
 
     // Create a PoS block (competing with PoW miners)
     bool CreateBlock(CBlock& block, CWallet* pwallet, const CChainParams& chainparams);
@@ -46,6 +49,11 @@ public:
 
     // Get expected time until next stake (estimate)
     int64_t GetExpectedStakeTime(const CChainParams& chainparams, CWallet* pwallet);
+
+    // Enable/disable staking
+    void EnableStaking() { fStakingEnabled = true; }
+    void DisableStaking() { fStakingEnabled = false; }
+    bool IsStakingEnabled() const { return fStakingEnabled; }
 };
 
 // Global masternode miner

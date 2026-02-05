@@ -1745,14 +1745,17 @@ bool AppInitMain()
 #ifdef ENABLE_WALLET
     StartWallets(scheduler);
 
-    // Start masternode staking thread
-    if (gArgs.GetBoolArg("-staking", true)) {
-        if (!::vpwallets.empty()) {
-            CWallet* pwallet = ::vpwallets[0];
-            if (pwallet) {
+    // Always start the staking thread, but only enable it if user requests
+    if (!::vpwallets.empty()) {
+        CWallet* pwallet = ::vpwallets[0];
+        if (pwallet) {
+            // Enable staking if -staking=1 is set in config
+            if (gArgs.GetBoolArg("-staking", false)) {
+                masternodeMiner.EnableStaking();
                 uiInterface.InitMessage(_("Starting masternode staking..."));
-                threadGroup.create_thread(boost::bind(&ThreadStakeMinter, pwallet));
             }
+            // Always create the thread - it will wait for EnableStaking() to be called
+            threadGroup.create_thread(boost::bind(&ThreadStakeMinter, pwallet));
         }
     }
 #endif

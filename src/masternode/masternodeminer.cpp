@@ -40,6 +40,10 @@ CMasternodeMiner masternodeMiner;
 
 bool CMasternodeMiner::CanStake(const CChainParams& chainparams)
 {
+    // Check if staking has been enabled by the user
+    if (!fStakingEnabled)
+        return false;
+
     const Consensus::Params& params = chainparams.GetConsensus();
 
     // Check if PoS is enabled

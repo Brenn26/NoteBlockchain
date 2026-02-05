@@ -3,6 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "rpc/server.h"
+#include "masternode/masternode.h"
 #include "masternode/masternodeman.h"
 #include "masternode/masternodeminer.h"
 #include "chainparams.h"
@@ -170,6 +171,12 @@ UniValue masternode(const JSONRPCRequest& request)
                     continue;
                 }
 
+                // Get the private key for signing
+                CKey key;
+                if (!pwallet->GetKey(keyID, key)) {
+                    throw JSONRPCError(RPC_WALLET_ERROR, "Failed to get private key for signing masternode announcement");
+                }
+
                 // Get external IP address from config
                 CService addr;
                 std::string externalIP = gArgs.GetArg("-externalip", "");
@@ -194,10 +201,16 @@ UniValue masternode(const JSONRPCRequest& request)
                     }
                 }
 
-                // Create masternode
+                // Create and sign masternode
                 CMasternode mn(outpoint, addr, pubKey);
+                if (!mn.Sign(key)) {
+                    throw JSONRPCError(RPC_MISC_ERROR, "Failed to sign masternode announcement");
+                }
 
                 if (mnodeman.Add(mn)) {
+                    // Enable staking now that masternode is registered
+                    masternodeMiner.EnableStaking();
+
                     // Broadcast masternode to network
                     if (g_connman) {
                         g_connman->ForEachNode([&mn](CNode* pnode) {
@@ -208,7 +221,7 @@ UniValue masternode(const JSONRPCRequest& request)
 
                     UniValue obj(UniValue::VOBJ);
                     obj.pushKV("status", "success");
-                    obj.pushKV("message", "Masternode started successfully");
+                    obj.pushKV("message", "Masternode started and staking enabled");
                     obj.pushKV("address", addr.ToString());
                     obj.pushKV("collateral", outpoint.ToString());
                     return obj;
@@ -246,9 +259,6 @@ UniValue masternode(const JSONRPCRequest& request)
             "   # Find your IP at: https://whatismyipaddress.com\n"
             "   externalip=YOUR.PUBLIC.IP.HERE\n\n"
 
-            "   # Enable staking (default: enabled)\n"
-            "   staking=1\n\n"
-
             "   # RPC settings (for monitoring)\n"
             "   server=1\n"
             "   rpcuser=yourusername\n"
@@ -259,7 +269,10 @@ UniValue masternode(const JSONRPCRequest& request)
             "4. Wait for " + std::to_string(params.nMasternodeMinimumConfirmations) + " confirmations (~" +
                 std::to_string(params.nMasternodeMinimumConfirmations * 30 / 60) + " minutes)\n\n"
 
-            "5. Check status:\n"
+            "5. Start your masternode (this also enables staking):\n"
+            "   notecoin-cli masternode start\n\n"
+
+            "6. Check status:\n"
             "   notecoin-cli masternode status\n"
             "   notecoin-cli getstakingstatus\n\n"
 
