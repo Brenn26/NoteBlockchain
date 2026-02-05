@@ -80,16 +80,14 @@ bool CheckStakeKernelHash(unsigned int nBits,
     ss << nTimeBlockFrom << prevout.hash << prevout.n << nTimeTx;
     hashProofOfStake = ss.GetHash();
 
-    // Get the difficulty target
+    // Get the difficulty target (now calculated separately for PoS)
     arith_uint256 bnTarget;
     bnTarget.SetCompact(nBits);
 
-    // Apply PoS weight factor to make PoS easier than PoW
-    // With nPoSTargetWeight = 100, we divide by (100/1000) = 0.1
-    // This makes PoS target 10x larger (easier) than PoW
-    // Example: 1000/100 = 10, allowing PoS to compete effectively with PoW
-    // Combined with coin-day weight, targets ~60% PoW / ~40% PoS split
-    bnTarget = (bnTarget * 1000) / params.nPoSTargetWeight;
+    // NOTE: We no longer apply the nPoSTargetWeight multiplier here because
+    // PoS now has its own separate difficulty calculation (GetNextPoSRequired)
+    // that adjusts independently from PoW difficulty. The separate calculation
+    // will naturally find the right difficulty level for PoS blocks.
 
     // Calculate weight based on coin value and age
     // More coins and longer age = higher weight = easier to stake

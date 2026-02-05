@@ -322,16 +322,12 @@ bool CMasternodeMiner::CreateBlock(CBlock& block, CWallet* pwallet, const CChain
 
     const Consensus::Params& params = chainparams.GetConsensus();
 
-    // Create a temporary block header to calculate the next difficulty target
-    // This is important: we need to use the adjusted difficulty for stake validation,
-    // not the previous block's difficulty
-    CBlockHeader tempHeader;
-    tempHeader.nVersion = ComputeBlockVersion(pindexPrev, params);
-    tempHeader.hashPrevBlock = pindexPrev->GetBlockHash();
-    tempHeader.nTime = GetAdjustedTime();
+    // Calculate the next PoS difficulty target
+    // This uses a separate difficulty calculation that only considers PoS blocks
+    // This allows PoS and PoW to have independent difficulty adjustments
+    unsigned int nBits = GetNextPoSRequired(pindexPrev, params);
 
-    // Calculate the next difficulty target (adjusts based on block times)
-    unsigned int nBits = GetNextWorkRequired(pindexPrev, &tempHeader, params);
+    LogPrintf("CMasternodeMiner::CreateBlock: Using PoS difficulty nBits=%08x (separate from PoW)\n", nBits);
 
     // Create coinbase (empty for PoS, but must include block height per BIP34)
     CMutableTransaction txCoinbase;
@@ -389,6 +385,8 @@ void ThreadStakeMinter(CWallet* pwallet)
     LogPrintf("ThreadStakeMinter started\n");
 
     int nCleanupCounter = 0;
+    int nLogCounter = 0;
+    bool fPreviouslyEnabled = false;
     try {
         while (true) {
             if (ShutdownRequested())
@@ -401,10 +399,35 @@ void ThreadStakeMinter(CWallet* pwallet)
             }
 
             // Check if we should stake
-            if (!masternodeMiner.CanStake(Params())) {
+            bool fCanStake = masternodeMiner.CanStake(Params());
+
+            // Log status changes
+            if (fCanStake && !fPreviouslyEnabled) {
+                LogPrintf("ThreadStakeMinter: Staking ENABLED - attempting to find PoS blocks\n");
+                fPreviouslyEnabled = true;
+            } else if (!fCanStake && fPreviouslyEnabled) {
+                LogPrintf("ThreadStakeMinter: Staking DISABLED\n");
+                fPreviouslyEnabled = false;
+            }
+
+            // Periodically log status when disabled (every 60 seconds)
+            if (!fCanStake) {
+                if (++nLogCounter >= 6) {
+                    if (!masternodeMiner.IsStakingEnabled()) {
+                        LogPrintf("ThreadStakeMinter: Waiting for staking to be enabled. Run 'masternode start' to begin staking.\n");
+                    } else if (chainActive.Height() < Params().GetConsensus().nMasternodeActivationHeight) {
+                        LogPrintf("ThreadStakeMinter: Waiting for PoS activation at height %d (current: %d)\n",
+                                 Params().GetConsensus().nMasternodeActivationHeight, chainActive.Height());
+                    } else {
+                        LogPrintf("ThreadStakeMinter: Staking disabled (check requirements)\n");
+                    }
+                    nLogCounter = 0;
+                }
                 MilliSleep(10000); // Sleep 10 seconds
                 continue;
             }
+
+            nLogCounter = 0;
 
             // Try to create a PoS block
             CBlock block;

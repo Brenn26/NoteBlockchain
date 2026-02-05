@@ -157,6 +157,70 @@ unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nF
     return bnNew.GetCompact();
 }
 
+unsigned int GetNextPoSRequired(const CBlockIndex* pindexLast, const Consensus::Params& params)
+{
+    const arith_uint256 posLimit = UintToArith256(params.powLimit);
+
+    // Target spacing for PoS blocks (in seconds)
+    // We want PoS to find blocks roughly every 50 seconds
+    const int64_t nTargetSpacing = 50;
+
+    // Number of PoS blocks to look back for difficulty adjustment
+    const int nPoSBlocksToCheck = 10;
+
+    // Find the last N PoS blocks
+    std::vector<const CBlockIndex*> vPoSBlocks;
+    const CBlockIndex* pindex = pindexLast;
+
+    while (pindex && vPoSBlocks.size() < nPoSBlocksToCheck) {
+        if (pindex->IsProofOfStake()) {
+            vPoSBlocks.push_back(pindex);
+        }
+        pindex = pindex->pprev;
+    }
+
+    // If we don't have enough PoS blocks yet, use minimum difficulty
+    if (vPoSBlocks.size() < 2) {
+        LogPrintf("GetNextPoSRequired: Not enough PoS blocks yet, using min difficulty\n");
+        return posLimit.GetCompact();
+    }
+
+    // Calculate average time between PoS blocks
+    int64_t nTotalTime = vPoSBlocks.front()->GetBlockTime() - vPoSBlocks.back()->GetBlockTime();
+    int64_t nBlockCount = vPoSBlocks.size() - 1;
+    int64_t nAverageSpacing = nTotalTime / nBlockCount;
+
+    LogPrintf("GetNextPoSRequired: Found %d PoS blocks, avg spacing=%d seconds (target=%d)\n",
+             vPoSBlocks.size(), nAverageSpacing, nTargetSpacing);
+
+    // Get current PoS difficulty from the last PoS block
+    arith_uint256 bnNew;
+    bnNew.SetCompact(vPoSBlocks.front()->nBits);
+
+    // Adjust difficulty based on actual vs target spacing
+    // If blocks come faster than target, increase difficulty (decrease target)
+    // If blocks come slower than target, decrease difficulty (increase target)
+    bnNew *= nAverageSpacing;
+    bnNew /= nTargetSpacing;
+
+    // Limit adjustment to 4x in either direction
+    arith_uint256 bnOld;
+    bnOld.SetCompact(vPoSBlocks.front()->nBits);
+
+    if (bnNew < bnOld / 4)
+        bnNew = bnOld / 4;
+    if (bnNew > bnOld * 4)
+        bnNew = bnOld * 4;
+
+    // Don't allow easier than minimum difficulty
+    if (bnNew > posLimit)
+        bnNew = posLimit;
+
+    LogPrintf("GetNextPoSRequired: New PoS difficulty target=%s\n", bnNew.ToString());
+
+    return bnNew.GetCompact();
+}
+
 bool CheckProofOfWork(uint256 hash, unsigned int nBits, const Consensus::Params& params)
 {
     bool fNegative;

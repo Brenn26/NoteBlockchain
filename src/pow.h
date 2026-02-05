@@ -19,6 +19,9 @@ unsigned int DigiShieldV4(const CBlockIndex* pindexLast, const CBlockHeader *pbl
 unsigned int GetNextWorkRequiredLegacy(const CBlockIndex* pindexLast, const CBlockHeader *pblock, const Consensus::Params&);
 unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nFirstBlockTime, const Consensus::Params&);
 
+/** Calculate next PoS difficulty based only on PoS blocks */
+unsigned int GetNextPoSRequired(const CBlockIndex* pindexLast, const Consensus::Params& params);
+
 /** Check whether a block hash satisfies the proof-of-work requirement specified by nBits */
 bool CheckProofOfWork(uint256 hash, unsigned int nBits, const Consensus::Params&);
 
