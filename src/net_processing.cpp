@@ -2890,8 +2890,15 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 return true;
             }
 
-            CKeyID keyID = GetKeyForDestination(dest);
-            if (keyID != mn.pubKeyMasternode.GetID()) {
+            // Extract CKeyID from CTxDestination (must be P2PKH for masternodes)
+            const CKeyID* keyID = boost::get<CKeyID>(&dest);
+            if (!keyID) {
+                LogPrint(BCLog::NET, "Masternode UTXO %s is not P2PKH, rejecting\n",
+                        mn.outpoint.ToString());
+                Misbehaving(pfrom->GetId(), 20);
+                return true;
+            }
+            if (*keyID != mn.pubKeyMasternode.GetID()) {
                 LogPrint(BCLog::NET, "Masternode pubkey doesn't match UTXO, rejecting from peer=%d\n",
                         pfrom->GetId());
                 Misbehaving(pfrom->GetId(), 20); // Punish peer for mismatched pubkey
