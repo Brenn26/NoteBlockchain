@@ -65,10 +65,12 @@ bool CMasternodeMiner::SelectMasternodeCoins(std::vector<COutput>& vCoins,
                                             const Consensus::Params& params)
 {
     std::vector<COutput> vAvailableCoins;
-    // Get all available coins (use default parameters)
-    pwallet->AvailableCoins(vAvailableCoins);
+    // Get all available coins
+    // IMPORTANT: Include immature coinstake outputs for masternode re-registration
+    // After staking, the new collateral is immature for 100 blocks but we still need to re-register
+    pwallet->AvailableCoins(vAvailableCoins, true, nullptr, 1, MAX_MONEY, MAX_MONEY, 0, 0, 9999999);
 
-    LogPrintf("CMasternodeMiner: AvailableCoins returned %d coins, looking for %s\n",
+    LogPrintf("CMasternodeMiner: AvailableCoins returned %d coins (including immature), looking for %s\n",
              vAvailableCoins.size(), FormatMoney(params.nMasternodeCollateral));
 
     // Get the external IP from config (same as GUI/RPC uses)
@@ -115,7 +117,10 @@ bool CMasternodeMiner::SelectMasternodeCoins(std::vector<COutput>& vCoins,
         if (out.tx->tx->vout[out.i].nValue == params.nMasternodeCollateral) {
             COutPoint outpoint(out.tx->GetHash(), out.i);
 
-            // Check if mature enough to stake
+            // Check if this is from a coinstake (PoS block reward)
+            bool fIsFromCoinstake = out.tx->tx->IsCoinStake();
+
+            // Check if mature enough
             if (out.nDepth < params.nMasternodeMinimumConfirmations) {
                 LogPrintf("CMasternodeMiner: Collateral %s needs %d more confirmations (has %d)\n",
                          outpoint.ToString(),
@@ -124,14 +129,30 @@ bool CMasternodeMiner::SelectMasternodeCoins(std::vector<COutput>& vCoins,
                 continue;
             }
 
+            // CRITICAL: Coinstake outputs need 100 blocks maturity before they can stake
+            // But we still need to register them to keep the masternode active
+            bool fCanStakeWithThisCoin = true;
+            if (fIsFromCoinstake && out.nDepth < COINBASE_MATURITY) {
+                LogPrintf("CMasternodeMiner: Coinstake output %s is immature (depth=%d, needs %d), can register but cannot stake yet\n",
+                         outpoint.ToString(), out.nDepth, COINBASE_MATURITY);
+                fCanStakeWithThisCoin = false;
+            }
+
             // Check if this UTXO is registered as a masternode
             CMasternode* pmn = mnodeman.Find(outpoint);
             if (pmn && pmn->IsEnabled() && pmn->addr == myAddr) {
-                // Already registered with correct IP - use it for staking
-                LogPrintf("CMasternodeMiner: Using registered masternode %s at %s\n",
-                         outpoint.ToString(), pmn->addr.ToString());
-                vCoins.push_back(out);
-                return true;
+                if (fCanStakeWithThisCoin) {
+                    // Already registered with correct IP and mature - use it for staking
+                    LogPrintf("CMasternodeMiner: Using registered masternode %s at %s\n",
+                             outpoint.ToString(), pmn->addr.ToString());
+                    vCoins.push_back(out);
+                    return true;
+                } else {
+                    // Registered but immature - keep looking for a mature coin
+                    LogPrintf("CMasternodeMiner: Masternode %s is registered but collateral is immature, waiting for maturity\n",
+                             outpoint.ToString());
+                    continue;
+                }
             }
 
             // If we previously had a masternode for this IP, allow re-registration
