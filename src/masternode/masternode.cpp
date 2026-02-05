@@ -6,7 +6,6 @@
 #include "hash.h"
 #include "util.h"
 #include "utiltime.h"
-#include "messagesigner.h"
 
 CMasternode::CMasternode() :
     outpoint(),
@@ -67,14 +66,19 @@ std::string CMasternode::GetStatus() const
 
 bool CMasternode::Sign(const CKey& keyMasternode)
 {
-    std::string strError;
     sigTime = GetAdjustedTime();
 
     // Create message to sign: outpoint + addr + sigTime
     std::string strMessage = outpoint.ToString() + addr.ToString() + std::to_string(sigTime);
 
-    // Sign the message
-    if (!CMessageSigner::SignMessage(strMessage, vchSig, keyMasternode)) {
+    // Hash the message with Bitcoin's message magic
+    std::string strMessageMagic = "NoteBlockchain Signed Message:\n";
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << strMessageMagic;
+    ss << strMessage;
+
+    // Sign the message using compact signature
+    if (!keyMasternode.SignCompact(ss.GetHash(), vchSig)) {
         LogPrintf("CMasternode::Sign: Failed to sign masternode announcement\n");
         return false;
     }
@@ -87,9 +91,22 @@ bool CMasternode::VerifySignature() const
     // Create the same message that was signed
     std::string strMessage = outpoint.ToString() + addr.ToString() + std::to_string(sigTime);
 
-    // Verify signature using the masternode pubkey
-    if (!CMessageSigner::VerifyMessage(pubKeyMasternode, vchSig, strMessage)) {
-        LogPrintf("CMasternode::VerifySignature: Failed to verify signature for %s\n", outpoint.ToString());
+    // Hash the message with the same magic
+    std::string strMessageMagic = "NoteBlockchain Signed Message:\n";
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << strMessageMagic;
+    ss << strMessage;
+
+    // Recover the public key from the signature
+    CPubKey pubkeyFromSig;
+    if (!pubkeyFromSig.RecoverCompact(ss.GetHash(), vchSig)) {
+        LogPrintf("CMasternode::VerifySignature: Failed to recover pubkey from signature for %s\n", outpoint.ToString());
+        return false;
+    }
+
+    // Verify that the recovered pubkey matches the claimed masternode pubkey
+    if (pubkeyFromSig.GetID() != pubKeyMasternode.GetID()) {
+        LogPrintf("CMasternode::VerifySignature: Recovered pubkey doesn't match claimed pubkey for %s\n", outpoint.ToString());
         return false;
     }
 
