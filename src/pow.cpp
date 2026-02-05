@@ -162,8 +162,9 @@ unsigned int GetNextPoSRequired(const CBlockIndex* pindexLast, const Consensus::
     const arith_uint256 posLimit = UintToArith256(params.powLimit);
 
     // Target spacing for PoS blocks (in seconds)
-    // We want PoS to find blocks roughly every 50 seconds
-    const int64_t nTargetSpacing = 50;
+    // With PoW at ~30 seconds, targeting 45 seconds for PoS gives ~60% PoW / 40% PoS split
+    // PoW: 2 blocks/min, PoS: 1.33 blocks/min = 60/40 ratio
+    const int64_t nTargetSpacing = 45;
 
     // Number of PoS blocks to look back for difficulty adjustment
     const int nPoSBlocksToCheck = 10;

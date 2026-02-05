@@ -86,6 +86,27 @@ bool CMasternodeMiner::SelectMasternodeCoins(std::vector<COutput>& vCoins,
 
     LogPrintf("CMasternodeMiner: Our configured IP: %s\n", myAddr.ToString());
 
+    // Check if WE (this wallet) have a masternode registered for our IP
+    // We need to verify the masternode belongs to US, not just any wallet on this IP
+    // This prevents auto-registration if another wallet on the same IP has a masternode
+    bool fHadMasternodeForIP = false;
+    std::vector<CMasternode> vMasternodes = mnodeman.GetFullMasternodeVector();
+    for (const auto& mn : vMasternodes) {
+        if (mn.addr == myAddr) {
+            // Found a masternode with our IP - check if we own its collateral
+            const CWalletTx* wtx = pwallet->GetWalletTx(mn.outpoint.hash);
+            if (wtx && mn.outpoint.n < wtx->tx->vout.size()) {
+                if (pwallet->IsMine(wtx->tx->vout[mn.outpoint.n])) {
+                    // This masternode belongs to us!
+                    fHadMasternodeForIP = true;
+                    LogPrintf("CMasternodeMiner: Found our own masternode for IP %s (may need re-registration)\n",
+                             myAddr.ToString());
+                    break;
+                }
+            }
+        }
+    }
+
     // Find masternodes that match BOTH our wallet UTXOs AND our configured external IP
     for (const COutput& out : vAvailableCoins) {
         LogPrintf("CMasternodeMiner:   Checking coin %s:%d value=%s depth=%d\n",
@@ -106,86 +127,90 @@ bool CMasternodeMiner::SelectMasternodeCoins(std::vector<COutput>& vCoins,
             // Check if this UTXO is registered as a masternode
             CMasternode* pmn = mnodeman.Find(outpoint);
             if (pmn && pmn->IsEnabled() && pmn->addr == myAddr) {
-                // Already registered with correct IP - use it
+                // Already registered with correct IP - use it for staking
                 LogPrintf("CMasternodeMiner: Using registered masternode %s at %s\n",
                          outpoint.ToString(), pmn->addr.ToString());
                 vCoins.push_back(out);
                 return true;
             }
 
-            // If not registered, or registered to different IP, we need to register/update
-            // This handles automatic re-registration after staking (when UTXO changes)
-            LogPrintf("CMasternodeMiner: Found mature collateral %s not registered to our IP %s - auto-registering\n",
-                     outpoint.ToString(), myAddr.ToString());
-
-            // Clean up any masternodes with spent UTXOs FIRST
-            // This ensures old entries are removed before adding the new one
-            mnodeman.CheckAndRemove();
-
-            // Get the public key and private key for this output
-            CTxDestination dest;
-            if (!ExtractDestination(out.tx->tx->vout[out.i].scriptPubKey, dest)) {
-                LogPrintf("CMasternodeMiner: Failed to extract destination from output\n");
-                continue;
-            }
-
-            CKeyID keyID = GetKeyForDestination(*pwallet, dest);
-            CPubKey pubKey;
-            if (!pwallet->GetPubKey(keyID, pubKey)) {
-                LogPrintf("CMasternodeMiner: Failed to get public key\n");
-                continue;
-            }
-
-            // Get the private key for signing
-            CKey key;
-            if (!pwallet->GetKey(keyID, key)) {
-                LogPrintf("CMasternodeMiner: Failed to get private key for signing\n");
-                continue;
-            }
-
-            // Remove any existing masternode with our IP (old spent UTXO)
-            // This is a backup in case CheckAndRemove() didn't catch it
-            if (mnodeman.HasIP(myAddr)) {
-                CMasternode* existingMN = mnodeman.FindByIP(myAddr);
-                if (existingMN) {
-                    mnodeman.Remove(existingMN->outpoint);
-                    LogPrintf("CMasternodeMiner: Removed old masternode entry %s\n",
-                             existingMN->outpoint.ToString());
-                }
-            }
-
-            // CRITICAL: Verify UTXO still exists right before adding masternode
-            // This prevents race condition where UTXO is spent between CheckAndRemove() and Add()
-            Coin coin;
-            if (!pcoinsTip || !pcoinsTip->GetCoin(outpoint, coin) || coin.IsSpent()) {
-                LogPrintf("CMasternodeMiner: UTXO %s was spent during registration attempt, skipping\n",
+            // If we previously had a masternode for this IP, allow re-registration
+            // This handles the case where we staked and the UTXO changed
+            if (fHadMasternodeForIP) {
+                LogPrintf("CMasternodeMiner: Re-registering masternode with new collateral %s (previous collateral was spent)\n",
                          outpoint.ToString());
-                continue;
-            }
 
-            // Create and sign masternode entry
-            CMasternode mn(outpoint, myAddr, pubKey);
-            if (!mn.Sign(key)) {
-                LogPrintf("CMasternodeMiner: Failed to sign masternode announcement\n");
-                continue;
-            }
+                // Clean up any masternodes with spent UTXOs
+                mnodeman.CheckAndRemove();
 
-            if (mnodeman.Add(mn)) {
-                LogPrintf("CMasternodeMiner: Auto-registered masternode with collateral %s at %s\n",
-                         outpoint.ToString(), myAddr.ToString());
-
-                // Broadcast to network
-                if (g_connman) {
-                    g_connman->ForEachNode([&mn](CNode* pnode) {
-                        g_connman->PushMessage(pnode, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::MNANNOUNCE, mn));
-                    });
-                    LogPrintf("CMasternodeMiner: Broadcast masternode to network\n");
+                // Get the public key and private key for this output
+                CTxDestination dest;
+                if (!ExtractDestination(out.tx->tx->vout[out.i].scriptPubKey, dest)) {
+                    LogPrintf("CMasternodeMiner: Failed to extract destination from output\n");
+                    continue;
                 }
 
-                vCoins.push_back(out);
-                return true;
+                CKeyID keyID = GetKeyForDestination(*pwallet, dest);
+                CPubKey pubKey;
+                if (!pwallet->GetPubKey(keyID, pubKey)) {
+                    LogPrintf("CMasternodeMiner: Failed to get public key\n");
+                    continue;
+                }
+
+                // Get the private key for signing
+                CKey key;
+                if (!pwallet->GetKey(keyID, key)) {
+                    LogPrintf("CMasternodeMiner: Failed to get private key for signing\n");
+                    continue;
+                }
+
+                // Remove any existing masternode with our IP (old spent UTXO)
+                if (mnodeman.HasIP(myAddr)) {
+                    CMasternode* existingMN = mnodeman.FindByIP(myAddr);
+                    if (existingMN) {
+                        mnodeman.Remove(existingMN->outpoint);
+                        LogPrintf("CMasternodeMiner: Removed old masternode entry %s\n",
+                                 existingMN->outpoint.ToString());
+                    }
+                }
+
+                // Verify UTXO still exists
+                Coin coin;
+                if (!pcoinsTip || !pcoinsTip->GetCoin(outpoint, coin) || coin.IsSpent()) {
+                    LogPrintf("CMasternodeMiner: UTXO %s was spent during registration attempt, skipping\n",
+                             outpoint.ToString());
+                    continue;
+                }
+
+                // Create and sign masternode entry
+                CMasternode mn(outpoint, myAddr, pubKey);
+                if (!mn.Sign(key)) {
+                    LogPrintf("CMasternodeMiner: Failed to sign masternode announcement\n");
+                    continue;
+                }
+
+                if (mnodeman.Add(mn)) {
+                    LogPrintf("CMasternodeMiner: Successfully re-registered masternode with collateral %s at %s\n",
+                             outpoint.ToString(), myAddr.ToString());
+
+                    // Broadcast to network
+                    if (g_connman) {
+                        g_connman->ForEachNode([&mn](CNode* pnode) {
+                            g_connman->PushMessage(pnode, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::MNANNOUNCE, mn));
+                        });
+                        LogPrintf("CMasternodeMiner: Broadcast re-registered masternode to network\n");
+                    }
+
+                    vCoins.push_back(out);
+                    return true;
+                } else {
+                    LogPrintf("CMasternodeMiner: Failed to add masternode\n");
+                }
             } else {
-                LogPrintf("CMasternodeMiner: Failed to add masternode\n");
+                // NOT auto-registering - user must explicitly run 'masternode start'
+                // This prevents masternodes from becoming active without user consent
+                LogPrintf("CMasternodeMiner: Found collateral %s but not registered. Run 'masternode start' to activate.\n",
+                         outpoint.ToString());
             }
         }
     }

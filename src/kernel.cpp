@@ -90,8 +90,13 @@ bool CheckStakeKernelHash(unsigned int nBits,
     // will naturally find the right difficulty level for PoS blocks.
 
     // Calculate weight based on coin value and age
-    // More coins and longer age = higher weight = easier to stake
-    arith_uint256 bnCoinDayWeight = arith_uint256(prevTxOut.nValue / COIN) * nStakeAge / (24 * 60 * 60);
+    // Weight = coins × (age / minimum_age)
+    // At minimum age (1 hour): weight = coins × 1
+    // At 2x minimum age: weight = coins × 2, etc.
+    // This makes staking easier as coins age beyond the minimum
+    int64_t nStakeAgeMultiplier = nStakeAge / params.nStakeMinAge;
+    if (nStakeAgeMultiplier < 1) nStakeAgeMultiplier = 1; // At least 1x weight at minimum age
+    arith_uint256 bnCoinDayWeight = arith_uint256(prevTxOut.nValue / COIN) * nStakeAgeMultiplier;
 
     // Target is multiplied by coin-day weight
     arith_uint256 bnTargetProofOfStake = bnTarget * bnCoinDayWeight;
