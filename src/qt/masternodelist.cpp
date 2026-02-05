@@ -210,11 +210,19 @@ void MasternodeList::on_startButton_clicked()
                 continue;
             }
 
-            // Get the public key
+            // Get the public key and private key
             CKeyID keyID = GetKeyForDestination(*pwallet, dest);
             CPubKey pubKey;
             if (!pwallet->GetPubKey(keyID, pubKey)) {
                 continue;
+            }
+
+            CKey key;
+            if (!pwallet->GetKey(keyID, key)) {
+                QMessageBox::warning(this, tr("Wallet Error"),
+                    tr("Failed to get private key for signing masternode announcement"),
+                    QMessageBox::Ok, QMessageBox::Ok);
+                return;
             }
 
             // Create masternode entry
@@ -249,6 +257,14 @@ void MasternodeList::on_startButton_clicked()
 
             CMasternode mn(outpoint, addr, pubKey);
 
+            // Sign the masternode announcement
+            if (!mn.Sign(key)) {
+                QMessageBox::warning(this, tr("Signing Error"),
+                    tr("Failed to sign masternode announcement"),
+                    QMessageBox::Ok, QMessageBox::Ok);
+                return;
+            }
+
             if (mnodeman.Add(mn)) {
                 // Broadcast masternode to network
                 if (g_connman) {
@@ -275,11 +291,4 @@ void MasternodeList::on_startButton_clicked()
             tr("No masternode collateral (%1) found in your wallet.").arg(collateralAmount),
             QMessageBox::Ok, QMessageBox::Ok);
     }
-}
-
-void MasternodeList::on_startAllButton_clicked()
-{
-    // This would start all available masternodes
-    // For now, just call the single start function
-    on_startButton_clicked();
 }

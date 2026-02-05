@@ -30,6 +30,9 @@
 #include <utilmoneystr.h>
 #include <utilstrencodings.h>
 #include <masternode/masternodeman.h>
+#include <coins.h>
+#include <script/standard.h>
+#include <keystore.h>
 #include <array>
 #include <memory>
 
@@ -2860,9 +2863,55 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         LogPrint(BCLog::NET, "Received masternode announcement %s from peer=%d\n",
                 mn.outpoint.ToString(), pfrom->GetId());
 
-        // Add to our masternode list
+        // CRITICAL SECURITY: Verify signature before accepting
+        if (!mn.VerifySignature()) {
+            LogPrint(BCLog::NET, "Invalid masternode signature from peer=%d, rejecting\n", pfrom->GetId());
+            Misbehaving(pfrom->GetId(), 20); // Punish peer for invalid signature
+            return true;
+        }
+
+        // CRITICAL SECURITY: Verify UTXO exists and matches the claimed pubkey
+        {
+            LOCK(cs_main);
+            Coin coin;
+            if (!pcoinsTip || !pcoinsTip->GetCoin(mn.outpoint, coin) || coin.IsSpent()) {
+                LogPrint(BCLog::NET, "Masternode UTXO %s not found or spent, rejecting from peer=%d\n",
+                        mn.outpoint.ToString(), pfrom->GetId());
+                Misbehaving(pfrom->GetId(), 10); // Punish peer for non-existent UTXO
+                return true;
+            }
+
+            // Verify UTXO scriptPubKey corresponds to the announced pubkey
+            CTxDestination dest;
+            if (!ExtractDestination(coin.out.scriptPubKey, dest)) {
+                LogPrint(BCLog::NET, "Failed to extract destination from UTXO %s, rejecting\n",
+                        mn.outpoint.ToString());
+                Misbehaving(pfrom->GetId(), 10);
+                return true;
+            }
+
+            CKeyID keyID = GetKeyForDestination(dest);
+            if (keyID != mn.pubKeyMasternode.GetID()) {
+                LogPrint(BCLog::NET, "Masternode pubkey doesn't match UTXO, rejecting from peer=%d\n",
+                        pfrom->GetId());
+                Misbehaving(pfrom->GetId(), 20); // Punish peer for mismatched pubkey
+                return true;
+            }
+
+            // Verify UTXO has correct collateral amount
+            if (coin.out.nValue != Params().GetConsensus().nMasternodeCollateral) {
+                LogPrint(BCLog::NET, "Masternode UTXO %s has wrong collateral amount, rejecting\n",
+                        mn.outpoint.ToString());
+                Misbehaving(pfrom->GetId(), 20);
+                return true;
+            }
+        }
+
+        // All validation passed - add to our masternode list
         if (mnodeman.Add(mn)) {
-            // Relay to other peers
+            LogPrint(BCLog::NET, "Accepted masternode announcement %s, relaying\n",
+                    mn.outpoint.ToString());
+            // Relay to other peers only after full verification
             connman->ForEachNode([&mn, &connman](CNode* pnode) {
                 connman->PushMessage(pnode, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::MNANNOUNCE, mn));
             });

@@ -26,6 +26,7 @@ public:
     COutPoint outpoint;              // Collateral outpoint (txid + n)
     CService addr;                   // Masternode IP:port
     CPubKey pubKeyMasternode;        // Masternode public key for payments
+    std::vector<unsigned char> vchSig; // Signature proving ownership of outpoint
     int64_t sigTime;                 // Signature timestamp
     int nActiveState;                // Current state
     int64_t nTimeLastSeen;           // Last time masternode was seen
@@ -35,6 +36,11 @@ public:
     CMasternode();
     CMasternode(const COutPoint& outpointIn, const CService& addrIn, const CPubKey& pubKeyIn);
 
+    // Sign the masternode announcement with the private key
+    bool Sign(const CKey& keyMasternode);
+    // Verify the masternode signature
+    bool VerifySignature() const;
+
     ADD_SERIALIZE_METHODS;
 
     template <typename Stream, typename Operation>
@@ -42,6 +48,7 @@ public:
         READWRITE(outpoint);
         READWRITE(addr);
         READWRITE(pubKeyMasternode);
+        READWRITE(vchSig);
         READWRITE(sigTime);
         READWRITE(nActiveState);
         READWRITE(nTimeLastSeen);

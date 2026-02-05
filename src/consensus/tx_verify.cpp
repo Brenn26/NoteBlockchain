@@ -226,6 +226,14 @@ bool Consensus::CheckTxInputs(const CTransaction& tx, CValidationState& state, c
                 strprintf("tried to spend coinbase at depth %d", nSpendHeight - coin.nHeight));
         }
 
+        // If prev is coinstake, check that it's matured
+        // Coinstake outputs must mature for 100 blocks before spending (same as coinbase)
+        if (coin.IsCoinStake() && nSpendHeight - coin.nHeight < COINBASE_MATURITY) {
+            return state.Invalid(false,
+                REJECT_INVALID, "bad-txns-premature-spend-of-coinstake",
+                strprintf("tried to spend coinstake at depth %d", nSpendHeight - coin.nHeight));
+        }
+
         // Check for negative or overflow input values
         nValueIn += coin.out.nValue;
         if (!MoneyRange(coin.out.nValue) || !MoneyRange(nValueIn)) {

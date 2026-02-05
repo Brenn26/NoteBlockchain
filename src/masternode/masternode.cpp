@@ -6,6 +6,7 @@
 #include "hash.h"
 #include "util.h"
 #include "utiltime.h"
+#include "messagesigner.h"
 
 CMasternode::CMasternode() :
     outpoint(),
@@ -62,4 +63,35 @@ std::string CMasternode::GetStatus() const
         default:
             return "UNKNOWN";
     }
+}
+
+bool CMasternode::Sign(const CKey& keyMasternode)
+{
+    std::string strError;
+    sigTime = GetAdjustedTime();
+
+    // Create message to sign: outpoint + addr + sigTime
+    std::string strMessage = outpoint.ToString() + addr.ToString() + std::to_string(sigTime);
+
+    // Sign the message
+    if (!CMessageSigner::SignMessage(strMessage, vchSig, keyMasternode)) {
+        LogPrintf("CMasternode::Sign: Failed to sign masternode announcement\n");
+        return false;
+    }
+
+    return true;
+}
+
+bool CMasternode::VerifySignature() const
+{
+    // Create the same message that was signed
+    std::string strMessage = outpoint.ToString() + addr.ToString() + std::to_string(sigTime);
+
+    // Verify signature using the masternode pubkey
+    if (!CMessageSigner::VerifyMessage(pubKeyMasternode, vchSig, strMessage)) {
+        LogPrintf("CMasternode::VerifySignature: Failed to verify signature for %s\n", outpoint.ToString());
+        return false;
+    }
+
+    return true;
 }

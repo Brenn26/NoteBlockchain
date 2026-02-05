@@ -114,7 +114,11 @@ bool CMasternodeMiner::SelectMasternodeCoins(std::vector<COutput>& vCoins,
             LogPrintf("CMasternodeMiner: Found mature collateral %s not registered to our IP %s - auto-registering\n",
                      outpoint.ToString(), myAddr.ToString());
 
-            // Get the public key for this output
+            // Clean up any masternodes with spent UTXOs FIRST
+            // This ensures old entries are removed before adding the new one
+            mnodeman.CheckAndRemove();
+
+            // Get the public key and private key for this output
             CTxDestination dest;
             if (!ExtractDestination(out.tx->tx->vout[out.i].scriptPubKey, dest)) {
                 LogPrintf("CMasternodeMiner: Failed to extract destination from output\n");
@@ -128,7 +132,15 @@ bool CMasternodeMiner::SelectMasternodeCoins(std::vector<COutput>& vCoins,
                 continue;
             }
 
+            // Get the private key for signing
+            CKey key;
+            if (!pwallet->GetKey(keyID, key)) {
+                LogPrintf("CMasternodeMiner: Failed to get private key for signing\n");
+                continue;
+            }
+
             // Remove any existing masternode with our IP (old spent UTXO)
+            // This is a backup in case CheckAndRemove() didn't catch it
             if (mnodeman.HasIP(myAddr)) {
                 CMasternode* existingMN = mnodeman.FindByIP(myAddr);
                 if (existingMN) {
@@ -138,8 +150,22 @@ bool CMasternodeMiner::SelectMasternodeCoins(std::vector<COutput>& vCoins,
                 }
             }
 
-            // Create and add new masternode entry
+            // CRITICAL: Verify UTXO still exists right before adding masternode
+            // This prevents race condition where UTXO is spent between CheckAndRemove() and Add()
+            Coin coin;
+            if (!pcoinsTip || !pcoinsTip->GetCoin(outpoint, coin) || coin.IsSpent()) {
+                LogPrintf("CMasternodeMiner: UTXO %s was spent during registration attempt, skipping\n",
+                         outpoint.ToString());
+                continue;
+            }
+
+            // Create and sign masternode entry
             CMasternode mn(outpoint, myAddr, pubKey);
+            if (!mn.Sign(key)) {
+                LogPrintf("CMasternodeMiner: Failed to sign masternode announcement\n");
+                continue;
+            }
+
             if (mnodeman.Add(mn)) {
                 LogPrintf("CMasternodeMiner: Auto-registered masternode with collateral %s at %s\n",
                          outpoint.ToString(), myAddr.ToString());
@@ -195,6 +221,12 @@ bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
         if (!wtx)
             continue;
 
+        COutPoint prevout(wtx->GetHash(), coin.i);
+
+        // Lock the coin to prevent it from being spent by regular transactions
+        // while we're attempting to stake with it
+        pwallet->LockCoin(prevout);
+
         // Try different timestamps (current time + up to 30 seconds into future)
         int64_t nCurrentTime = GetAdjustedTime();
 
@@ -202,6 +234,7 @@ bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
                  wtx->GetHash().ToString().substr(0,10), coin.i,
                  FormatMoney(coin.tx->tx->vout[coin.i].nValue), coin.nDepth);
 
+        bool fStakeSuccess = false;
         for (unsigned int nTryTime = nCurrentTime; nTryTime <= nCurrentTime + 30; nTryTime++) {
             // Check if this coin can stake at this time
             uint256 hashProofOfStake;
@@ -219,7 +252,6 @@ bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
             }
 
             const CTransaction& txPrev = *wtx->tx;
-            COutPoint prevout(wtx->GetHash(), coin.i);
 
             if (CheckStakeKernelHash(nBits, pindexFrom, txPrev, prevout,
                                    nTryTime, hashProofOfStake, params)) {
@@ -260,8 +292,15 @@ bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
                 txNewMut.vin[0].scriptWitness = sigdata.scriptWitness;
 
                 txNew = txNewMut;
+                fStakeSuccess = true;
+                // Keep the coin locked - it will be spent by the coinstake transaction
                 return true;
             }
+        }
+
+        // If we didn't successfully stake, unlock the coin so it can be used for other transactions
+        if (!fStakeSuccess) {
+            pwallet->UnlockCoin(prevout);
         }
     }
 

@@ -568,6 +568,10 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
     if (tx.IsCoinBase())
         return state.DoS(100, false, REJECT_INVALID, "coinbase");
 
+    // Coinstake is only valid in a block, not as a loose transaction
+    if (tx.IsCoinStake())
+        return state.DoS(100, false, REJECT_INVALID, "coinstake");
+
     // Reject transactions with witness before segregated witness activates (override with -prematurewitness)
     bool witnessEnabled = IsWitnessEnabled(chainActive.Tip(), chainparams.GetConsensus());
     if (!gArgs.GetBoolArg("-prematurewitness", false) && tx.HasWitness() && !witnessEnabled) {
@@ -1588,6 +1592,7 @@ DisconnectResult CChainState::DisconnectBlock(const CBlock& block, const CBlockI
         const CTransaction &tx = *(block.vtx[i]);
         uint256 hash = tx.GetHash();
         bool is_coinbase = tx.IsCoinBase();
+        bool is_coinstake = tx.IsCoinStake();
 
         // Check that all outputs are available and match the outputs in the block itself
         // exactly.
@@ -1596,7 +1601,8 @@ DisconnectResult CChainState::DisconnectBlock(const CBlock& block, const CBlockI
                 COutPoint out(hash, o);
                 Coin coin;
                 bool is_spent = view.SpendCoin(out, &coin);
-                if (!is_spent || tx.vout[o] != coin.out || pindex->nHeight != coin.nHeight || is_coinbase != coin.fCoinBase) {
+                if (!is_spent || tx.vout[o] != coin.out || pindex->nHeight != coin.nHeight ||
+                    is_coinbase != coin.fCoinBase || is_coinstake != coin.fCoinStake) {
                     fClean = false; // transaction output mismatch
                 }
             }
@@ -1994,18 +2000,51 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
 
     // PoS: Verify coinstake outputs and rewards
     if (block.IsProofOfStake()) {
-        // Verify coinstake reward (output 2 is the reward)
-        if (block.vtx[1]->vout.size() < 3)
-            return state.DoS(100, error("ConnectBlock(): coinstake has insufficient outputs"), REJECT_INVALID, "bad-pos-outputs");
+        // Verify coinstake structure: must have exactly 3 outputs
+        // Output 0: empty (kernel marker), Output 1: collateral return, Output 2: reward
+        if (block.vtx[1]->vout.size() != 3)
+            return state.DoS(100, error("ConnectBlock(): coinstake must have exactly 3 outputs, got %d", block.vtx[1]->vout.size()),
+                           REJECT_INVALID, "bad-pos-outputs");
 
+        // Verify output 0 is empty (kernel marker)
+        if (!block.vtx[1]->vout[0].IsNull())
+            return state.DoS(100, error("ConnectBlock(): coinstake output 0 must be empty"),
+                           REJECT_INVALID, "bad-pos-kernel");
+
+        // Verify the input (must have exactly 1 input)
+        if (block.vtx[1]->vin.size() != 1)
+            return state.DoS(100, error("ConnectBlock(): coinstake must have exactly 1 input, got %d", block.vtx[1]->vin.size()),
+                           REJECT_INVALID, "bad-pos-inputs");
+
+        // Get the input coin to verify collateral amount and destination
+        const COutPoint& prevout = block.vtx[1]->vin[0].prevout;
+        const Coin& coin = view.AccessCoin(prevout);
+        if (coin.IsSpent())
+            return state.DoS(100, error("ConnectBlock(): coinstake input already spent"),
+                           REJECT_INVALID, "bad-pos-input-spent");
+
+        // Verify input value matches masternode collateral
+        if (coin.out.nValue != chainparams.GetConsensus().nMasternodeCollateral)
+            return state.DoS(100, error("ConnectBlock(): coinstake input value %d doesn't match collateral %d",
+                           coin.out.nValue, chainparams.GetConsensus().nMasternodeCollateral),
+                           REJECT_INVALID, "bad-pos-input-value");
+
+        // Verify collateral is returned to the same address in output 1
+        if (block.vtx[1]->vout[1].nValue != chainparams.GetConsensus().nMasternodeCollateral)
+            return state.DoS(100, error("ConnectBlock(): coinstake output 1 value %d doesn't match collateral %d",
+                           block.vtx[1]->vout[1].nValue, chainparams.GetConsensus().nMasternodeCollateral),
+                           REJECT_INVALID, "bad-pos-collateral");
+
+        // Verify collateral is returned to the same scriptPubKey (same address)
+        if (block.vtx[1]->vout[1].scriptPubKey != coin.out.scriptPubKey)
+            return state.DoS(100, error("ConnectBlock(): coinstake output 1 doesn't return to input address"),
+                           REJECT_INVALID, "bad-pos-destination");
+
+        // Verify coinstake reward (output 2)
         CAmount nStakeReward = block.vtx[1]->vout[2].nValue;
         if (nStakeReward > blockReward)
             return state.DoS(100, error("ConnectBlock(): coinstake pays too much (actual=%d vs limit=%d)", nStakeReward, blockReward),
                            REJECT_INVALID, "bad-pos-amount");
-
-        // Collateral should be returned in output 1
-        if (block.vtx[1]->vout[1].nValue != chainparams.GetConsensus().nMasternodeCollateral)
-            return state.DoS(100, error("ConnectBlock(): coinstake doesn't return correct collateral"), REJECT_INVALID, "bad-pos-collateral");
 
         // Verify IP uniqueness - one masternode per IP address
         const COutPoint& masternodeOutpoint = block.vtx[1]->vin[0].prevout;
