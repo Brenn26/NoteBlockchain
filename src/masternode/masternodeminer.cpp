@@ -188,6 +188,8 @@ bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
                 // Input: reference the collateral outpoint (proves ownership, NOT spent)
                 txNewMut.vin.resize(1);
                 txNewMut.vin[0].prevout = prevout;
+                // Encode block height in nSequence to ensure unique txid per block
+                txNewMut.vin[0].nSequence = (uint32_t)(pindexPrev->nHeight + 1);
 
                 // Calculate block reward
                 CAmount nReward = GetBlockSubsidy(pindexPrev->nHeight + 1, params);
