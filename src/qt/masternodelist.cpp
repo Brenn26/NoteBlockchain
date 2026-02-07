@@ -3,7 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "masternodelist.h"
-#include "ui_masternodelist.h"
+#include <qt/forms/ui_masternodelist.h>
 
 #include "clientmodel.h"
 #include "walletmodel.h"
@@ -82,14 +82,21 @@ void MasternodeList::updateMyNodeList()
     bool foundMasternode = false;
     CAmount totalRewards = 0;
 
-    // Iterate through our wallet outputs to find collateral
-    std::vector<COutput> vCoins;
-    pwallet->AvailableCoins(vCoins);
+    // Search ALL wallet transactions for collateral (including locked UTXOs)
+    const Consensus::Params& params = Params().GetConsensus();
 
-    for (const auto& out : vCoins) {
-        if (out.tx->tx->vout[out.i].nValue == Params().GetConsensus().nMasternodeCollateral) {
-            // Found potential collateral
-            COutPoint outpoint(out.tx->tx->GetHash(), out.i);
+    for (const auto& pair : pwallet->mapWallet) {
+        if (foundMasternode) break;
+        const CWalletTx& wtx = pair.second;
+        if (wtx.GetDepthInMainChain() <= 0)
+            continue;
+        for (unsigned int i = 0; i < wtx.tx->vout.size(); i++) {
+            if (wtx.tx->vout[i].nValue != params.nMasternodeCollateral)
+                continue;
+            if (!pwallet->IsMine(wtx.tx->vout[i]))
+                continue;
+
+            COutPoint outpoint(wtx.tx->GetHash(), i);
 
             // Check if this is registered as a masternode
             CMasternode* pmn = mnodeman.Find(outpoint);
@@ -109,11 +116,10 @@ void MasternodeList::updateMyNodeList()
                 totalRewards = 0;
                 int blocksProduced = 0;
                 for (const auto& entry : pwallet->mapWallet) {
-                    const CWalletTx& wtx = entry.second;
-                    if (wtx.tx->IsCoinStake() && wtx.GetDepthInMainChain() > 0) {
-                        // Reward is in vout[1] (collateral is never spent, so vout[1] is pure reward)
-                        if (wtx.tx->vout.size() >= 2 && pwallet->IsMine(wtx.tx->vout[1])) {
-                            CAmount nReward = wtx.tx->vout[1].nValue;
+                    const CWalletTx& rewardWtx = entry.second;
+                    if (rewardWtx.tx->IsCoinStake() && rewardWtx.GetDepthInMainChain() > 0) {
+                        if (rewardWtx.tx->vout.size() >= 2 && pwallet->IsMine(rewardWtx.tx->vout[1])) {
+                            CAmount nReward = rewardWtx.tx->vout[1].nValue;
                             if (nReward > 0) {
                                 totalRewards += nReward;
                                 blocksProduced++;
@@ -186,117 +192,135 @@ void MasternodeList::on_startButton_clicked()
     // This prevents double-counting when re-registering after restaking
     mnodeman.CheckAndRemove();
 
-    // Try to find collateral and start masternode
-    std::vector<COutput> vCoins;
-    pwallet->AvailableCoins(vCoins);
+    // Find collateral — search ALL wallet transactions (including locked UTXOs)
+    const Consensus::Params& params = Params().GetConsensus();
+    COutPoint foundOutpoint;
+    const CWalletTx* foundWtx = nullptr;
+    int foundVout = -1;
 
-    bool foundCollateral = false;
-    for (const auto& out : vCoins) {
-        if (out.tx->tx->vout[out.i].nValue == Params().GetConsensus().nMasternodeCollateral) {
-            foundCollateral = true;
+    for (const auto& pair : pwallet->mapWallet) {
+        const CWalletTx& wtx = pair.second;
+        if (wtx.GetDepthInMainChain() <= 0)
+            continue;
+        for (unsigned int i = 0; i < wtx.tx->vout.size(); i++) {
+            if (wtx.tx->vout[i].nValue == params.nMasternodeCollateral &&
+                pwallet->IsMine(wtx.tx->vout[i])) {
+                COutPoint outpoint(wtx.tx->GetHash(), i);
 
-            COutPoint outpoint(out.tx->tx->GetHash(), out.i);
+                // Verify the UTXO is still unspent in the chain
+                Coin coin;
+                if (!pcoinsTip || !pcoinsTip->GetCoin(outpoint, coin) || coin.IsSpent())
+                    continue;
 
-            // Check if already registered
-            if (mnodeman.Has(outpoint)) {
-                QMessageBox::information(this, tr("Already Running"),
-                    tr("This masternode is already registered and running."),
-                    QMessageBox::Ok, QMessageBox::Ok);
-                return;
+                foundOutpoint = outpoint;
+                foundWtx = &wtx;
+                foundVout = i;
+                break;
             }
-
-            // Get the address for this output
-            CTxDestination dest;
-            if (!ExtractDestination(out.tx->tx->vout[out.i].scriptPubKey, dest)) {
-                continue;
-            }
-
-            // Get the public key and private key
-            CKeyID keyID = GetKeyForDestination(*pwallet, dest);
-            CPubKey pubKey;
-            if (!pwallet->GetPubKey(keyID, pubKey)) {
-                continue;
-            }
-
-            CKey key;
-            if (!pwallet->GetKey(keyID, key)) {
-                QMessageBox::warning(this, tr("Wallet Error"),
-                    tr("Failed to get private key for signing masternode announcement"),
-                    QMessageBox::Ok, QMessageBox::Ok);
-                return;
-            }
-
-            // Create masternode entry
-            // Get external IP from config file
-            CService addr;
-            std::string externalIP = gArgs.GetArg("-externalip", "");
-            if (externalIP.empty()) {
-                QMessageBox::warning(this, tr("Configuration Error"),
-                    tr("No external IP configured. Please add 'externalip=YOUR.IP.ADDRESS' to noteblockchain.conf"),
-                    QMessageBox::Ok, QMessageBox::Ok);
-                return;
-            }
-
-            if (!Lookup(externalIP.c_str(), addr, Params().GetDefaultPort(), false)) {
-                QMessageBox::warning(this, tr("Configuration Error"),
-                    tr("Failed to lookup external IP address: ") + QString::fromStdString(externalIP),
-                    QMessageBox::Ok, QMessageBox::Ok);
-                return;
-            }
-
-            // Check if this IP is already registered
-            // If so, remove the old entry (with spent outpoint) and update with new one
-            if (mnodeman.HasIP(addr)) {
-                CMasternode* existingMN = mnodeman.FindByIP(addr);
-                if (existingMN) {
-                    // Remove the old entry
-                    mnodeman.Remove(existingMN->outpoint);
-                    LogPrintf("Masternode: Updating %s with new collateral %s (old: %s)\n",
-                             addr.ToString(), outpoint.ToString(), existingMN->outpoint.ToString());
-                }
-            }
-
-            CMasternode mn(outpoint, addr, pubKey);
-
-            // Sign the masternode announcement
-            if (!mn.Sign(key)) {
-                QMessageBox::warning(this, tr("Signing Error"),
-                    tr("Failed to sign masternode announcement"),
-                    QMessageBox::Ok, QMessageBox::Ok);
-                return;
-            }
-
-            if (mnodeman.Add(mn)) {
-                // Lock the collateral UTXO — it is never spent
-                pwallet->LockCoin(outpoint);
-
-                // Enable staking now that masternode is registered
-                masternodeMiner.EnableStaking();
-
-                // Broadcast masternode to network
-                if (g_connman) {
-                    g_connman->ForEachNode([&mn](CNode* pnode) {
-                        g_connman->PushMessage(pnode, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::MNANNOUNCE, mn));
-                    });
-                    LogPrintf("Broadcast masternode %s to network\n", mn.outpoint.ToString());
-                }
-
-                QMessageBox::information(this, tr("Success"),
-                    tr("Masternode started, collateral locked!"),
-                    QMessageBox::Ok, QMessageBox::Ok);
-                updateMyNodeList();
-                return;
-            }
-
-            break;
         }
+        if (foundVout >= 0) break;
     }
 
-    if (!foundCollateral) {
-        QString collateralAmount = QString::fromStdString(FormatMoney(Params().GetConsensus().nMasternodeCollateral));
+    if (foundVout < 0) {
+        QString collateralAmount = QString::fromStdString(FormatMoney(params.nMasternodeCollateral));
         QMessageBox::warning(this, tr("No Collateral"),
             tr("No masternode collateral (%1) found in your wallet.").arg(collateralAmount),
             QMessageBox::Ok, QMessageBox::Ok);
+        return;
+    }
+
+    // Check if already registered
+    if (mnodeman.Has(foundOutpoint)) {
+        QMessageBox::information(this, tr("Already Running"),
+            tr("This masternode is already registered and running."),
+            QMessageBox::Ok, QMessageBox::Ok);
+        return;
+    }
+
+    // Get the address for this output
+    CTxDestination dest;
+    if (!ExtractDestination(foundWtx->tx->vout[foundVout].scriptPubKey, dest)) {
+        QMessageBox::warning(this, tr("Error"),
+            tr("Failed to extract destination from collateral output."),
+            QMessageBox::Ok, QMessageBox::Ok);
+        return;
+    }
+
+    // Get the public key and private key
+    CKeyID keyID = GetKeyForDestination(*pwallet, dest);
+    CPubKey pubKey;
+    if (!pwallet->GetPubKey(keyID, pubKey)) {
+        QMessageBox::warning(this, tr("Error"),
+            tr("Failed to get public key for collateral address."),
+            QMessageBox::Ok, QMessageBox::Ok);
+        return;
+    }
+
+    CKey key;
+    if (!pwallet->GetKey(keyID, key)) {
+        QMessageBox::warning(this, tr("Wallet Error"),
+            tr("Failed to get private key for signing masternode announcement"),
+            QMessageBox::Ok, QMessageBox::Ok);
+        return;
+    }
+
+    // Get external IP from config file
+    CService addr;
+    std::string externalIP = gArgs.GetArg("-externalip", "");
+    if (externalIP.empty()) {
+        QMessageBox::warning(this, tr("Configuration Error"),
+            tr("No external IP configured. Please add 'externalip=YOUR.IP.ADDRESS' to noteblockchain.conf"),
+            QMessageBox::Ok, QMessageBox::Ok);
+        return;
+    }
+
+    if (!Lookup(externalIP.c_str(), addr, Params().GetDefaultPort(), false)) {
+        QMessageBox::warning(this, tr("Configuration Error"),
+            tr("Failed to lookup external IP address: ") + QString::fromStdString(externalIP),
+            QMessageBox::Ok, QMessageBox::Ok);
+        return;
+    }
+
+    // Check if this IP is already registered
+    if (mnodeman.HasIP(addr)) {
+        CMasternode* existingMN = mnodeman.FindByIP(addr);
+        if (existingMN) {
+            mnodeman.Remove(existingMN->outpoint);
+            LogPrintf("Masternode: Updating %s with new collateral %s (old: %s)\n",
+                     addr.ToString(), foundOutpoint.ToString(), existingMN->outpoint.ToString());
+        }
+    }
+
+    CMasternode mn(foundOutpoint, addr, pubKey);
+
+    // Sign the masternode announcement
+    if (!mn.Sign(key)) {
+        QMessageBox::warning(this, tr("Signing Error"),
+            tr("Failed to sign masternode announcement"),
+            QMessageBox::Ok, QMessageBox::Ok);
+        return;
+    }
+
+    if (mnodeman.Add(mn)) {
+        // Lock the collateral UTXO — it is never spent
+        pwallet->LockCoin(foundOutpoint);
+
+        // Enable staking now that masternode is registered
+        masternodeMiner.EnableStaking();
+
+        // Broadcast masternode to network
+        if (g_connman) {
+            g_connman->ForEachNode([&mn](CNode* pnode) {
+                g_connman->PushMessage(pnode, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::MNANNOUNCE, mn));
+            });
+            LogPrintf("Broadcast masternode %s to network\n", mn.outpoint.ToString());
+        }
+
+        QMessageBox::information(this, tr("Success"),
+            tr("Masternode started, collateral locked!"),
+            QMessageBox::Ok, QMessageBox::Ok);
+        updateMyNodeList();
+        return;
     }
 }
 

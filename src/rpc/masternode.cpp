@@ -183,98 +183,120 @@ UniValue masternode(const JSONRPCRequest& request)
         // This prevents double-counting when re-registering after restaking
         mnodeman.CheckAndRemove();
 
-        // Find collateral
-        std::vector<COutput> vCoins;
-        pwallet->AvailableCoins(vCoins);
+        // Find collateral — search ALL wallet transactions (including locked UTXOs)
+        // AvailableCoins skips locked UTXOs, but we need to find them for re-registration
+        COutPoint foundOutpoint;
+        const CWalletTx* foundWtx = nullptr;
+        int foundVout = -1;
 
-        for (const auto& out : vCoins) {
-            if (out.tx->tx->vout[out.i].nValue == params.nMasternodeCollateral) {
-                COutPoint outpoint(out.tx->tx->GetHash(), out.i);
+        for (const auto& pair : pwallet->mapWallet) {
+            const CWalletTx& wtx = pair.second;
+            if (wtx.GetDepthInMainChain() <= 0)
+                continue;
+            for (unsigned int i = 0; i < wtx.tx->vout.size(); i++) {
+                if (wtx.tx->vout[i].nValue == params.nMasternodeCollateral &&
+                    pwallet->IsMine(wtx.tx->vout[i])) {
+                    COutPoint outpoint(wtx.tx->GetHash(), i);
 
-                // Check if already registered
-                if (mnodeman.Has(outpoint)) {
-                    throw JSONRPCError(RPC_MISC_ERROR, "Masternode already registered");
+                    // Verify the UTXO is still unspent in the chain
+                    Coin coin;
+                    if (!pcoinsTip || !pcoinsTip->GetCoin(outpoint, coin) || coin.IsSpent())
+                        continue;
+
+                    foundOutpoint = outpoint;
+                    foundWtx = &wtx;
+                    foundVout = i;
+                    break;
                 }
-
-                // Get the address for this output
-                CTxDestination dest;
-                if (!ExtractDestination(out.tx->tx->vout[out.i].scriptPubKey, dest)) {
-                    continue;
-                }
-
-                // Get the public key
-                CKeyID keyID = GetKeyForDestination(*pwallet, dest);
-                CPubKey pubKey;
-                if (!pwallet->GetPubKey(keyID, pubKey)) {
-                    continue;
-                }
-
-                // Get the private key for signing
-                CKey key;
-                if (!pwallet->GetKey(keyID, key)) {
-                    throw JSONRPCError(RPC_WALLET_ERROR, "Failed to get private key for signing masternode announcement");
-                }
-
-                // Get external IP address from config
-                CService addr;
-                std::string externalIP = gArgs.GetArg("-externalip", "");
-                if (externalIP.empty()) {
-                    throw JSONRPCError(RPC_MISC_ERROR,
-                        "No external IP configured. Add 'externalip=YOUR.IP.ADDRESS' to noteblockchain.conf");
-                }
-
-                if (!Lookup(externalIP.c_str(), addr, Params().GetDefaultPort(), false)) {
-                    throw JSONRPCError(RPC_MISC_ERROR, "Failed to lookup external IP address: " + externalIP);
-                }
-
-                // Check if this IP is already registered
-                // If so, remove the old entry (with spent outpoint) and update with new one
-                if (mnodeman.HasIP(addr)) {
-                    CMasternode* existingMN = mnodeman.FindByIP(addr);
-                    if (existingMN) {
-                        // Remove the old entry
-                        mnodeman.Remove(existingMN->outpoint);
-                        LogPrintf("Masternode: Updating %s with new collateral %s (old: %s)\n",
-                                 addr.ToString(), outpoint.ToString(), existingMN->outpoint.ToString());
-                    }
-                }
-
-                // Create and sign masternode
-                CMasternode mn(outpoint, addr, pubKey);
-                if (!mn.Sign(key)) {
-                    throw JSONRPCError(RPC_MISC_ERROR, "Failed to sign masternode announcement");
-                }
-
-                if (mnodeman.Add(mn)) {
-                    // Lock the collateral UTXO to prevent accidental spending
-                    // The collateral remains in the UTXO set — it is never spent
-                    pwallet->LockCoin(outpoint);
-
-                    // Enable staking now that masternode is registered
-                    masternodeMiner.EnableStaking();
-
-                    // Broadcast masternode to network
-                    if (g_connman) {
-                        g_connman->ForEachNode([&mn](CNode* pnode) {
-                            g_connman->PushMessage(pnode, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::MNANNOUNCE, mn));
-                        });
-                        LogPrintf("Broadcast masternode %s to network\n", mn.outpoint.ToString());
-                    }
-
-                    UniValue obj(UniValue::VOBJ);
-                    obj.pushKV("status", "success");
-                    obj.pushKV("message", "Masternode started, collateral locked");
-                    obj.pushKV("address", addr.ToString());
-                    obj.pushKV("collateral", outpoint.ToString());
-                    return obj;
-                }
-
-                throw JSONRPCError(RPC_MISC_ERROR, "Failed to add masternode");
             }
+            if (foundVout >= 0) break;
         }
 
-        throw JSONRPCError(RPC_MISC_ERROR,
-            "No masternode collateral (" + FormatMoney(params.nMasternodeCollateral) + ") found in wallet");
+        if (foundVout < 0) {
+            throw JSONRPCError(RPC_MISC_ERROR,
+                "No masternode collateral (" + FormatMoney(params.nMasternodeCollateral) + ") found in wallet");
+        }
+
+        {
+            // Check if already registered
+            if (mnodeman.Has(foundOutpoint)) {
+                throw JSONRPCError(RPC_MISC_ERROR, "Masternode already registered");
+            }
+
+            // Get the address for this output
+            CTxDestination dest;
+            if (!ExtractDestination(foundWtx->tx->vout[foundVout].scriptPubKey, dest)) {
+                throw JSONRPCError(RPC_MISC_ERROR, "Failed to extract destination from collateral output");
+            }
+
+            // Get the public key
+            CKeyID keyID = GetKeyForDestination(*pwallet, dest);
+            CPubKey pubKey;
+            if (!pwallet->GetPubKey(keyID, pubKey)) {
+                throw JSONRPCError(RPC_WALLET_ERROR, "Failed to get public key for collateral address");
+            }
+
+            // Get the private key for signing
+            CKey key;
+            if (!pwallet->GetKey(keyID, key)) {
+                throw JSONRPCError(RPC_WALLET_ERROR, "Failed to get private key for signing masternode announcement");
+            }
+
+            // Get external IP address from config
+            CService addr;
+            std::string externalIP = gArgs.GetArg("-externalip", "");
+            if (externalIP.empty()) {
+                throw JSONRPCError(RPC_MISC_ERROR,
+                    "No external IP configured. Add 'externalip=YOUR.IP.ADDRESS' to noteblockchain.conf");
+            }
+
+            if (!Lookup(externalIP.c_str(), addr, Params().GetDefaultPort(), false)) {
+                throw JSONRPCError(RPC_MISC_ERROR, "Failed to lookup external IP address: " + externalIP);
+            }
+
+            // Check if this IP is already registered
+            // If so, remove the old entry and update with new one
+            if (mnodeman.HasIP(addr)) {
+                CMasternode* existingMN = mnodeman.FindByIP(addr);
+                if (existingMN) {
+                    mnodeman.Remove(existingMN->outpoint);
+                    LogPrintf("Masternode: Updating %s with new collateral %s (old: %s)\n",
+                             addr.ToString(), foundOutpoint.ToString(), existingMN->outpoint.ToString());
+                }
+            }
+
+            // Create and sign masternode
+            CMasternode mn(foundOutpoint, addr, pubKey);
+            if (!mn.Sign(key)) {
+                throw JSONRPCError(RPC_MISC_ERROR, "Failed to sign masternode announcement");
+            }
+
+            if (mnodeman.Add(mn)) {
+                // Lock the collateral UTXO to prevent accidental spending
+                // The collateral remains in the UTXO set — it is never spent
+                pwallet->LockCoin(foundOutpoint);
+
+                // Enable staking now that masternode is registered
+                masternodeMiner.EnableStaking();
+
+                // Broadcast masternode to network
+                if (g_connman) {
+                    g_connman->ForEachNode([&mn](CNode* pnode) {
+                        g_connman->PushMessage(pnode, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::MNANNOUNCE, mn));
+                    });
+                    LogPrintf("Broadcast masternode %s to network\n", mn.outpoint.ToString());
+                }
+
+                UniValue obj(UniValue::VOBJ);
+                obj.pushKV("status", "success");
+                obj.pushKV("message", "Masternode started, collateral locked");
+                obj.pushKV("address", addr.ToString());
+                obj.pushKV("collateral", foundOutpoint.ToString());
+                return obj;
+            }
+
+            throw JSONRPCError(RPC_MISC_ERROR, "Failed to add masternode");
+        }
     }
 
     if (strCommand == "stop") {
@@ -284,41 +306,56 @@ UniValue masternode(const JSONRPCRequest& request)
 
         LOCK2(cs_main, pwallet->cs_wallet);
 
-        // Find our masternode by IP
+        const Consensus::Params& params = Params().GetConsensus();
+        UniValue obj(UniValue::VOBJ);
+        bool stoppedMasternode = false;
+
+        // Try to find registered masternode by IP first
         std::string externalIP = gArgs.GetArg("-externalip", "");
-        if (externalIP.empty())
-            throw JSONRPCError(RPC_MISC_ERROR, "No external IP configured");
-
-        CService addr;
-        if (!Lookup(externalIP.c_str(), addr, Params().GetDefaultPort(), false))
-            throw JSONRPCError(RPC_MISC_ERROR, "Failed to lookup external IP address");
-
-        CMasternode* pmn = mnodeman.FindByIP(addr);
-        if (!pmn)
-            throw JSONRPCError(RPC_MISC_ERROR, "No active masternode found for IP " + addr.ToString());
-
-        // Verify we own this masternode's collateral
-        const CWalletTx* wtx = pwallet->GetWalletTx(pmn->outpoint.hash);
-        if (!wtx || pmn->outpoint.n >= wtx->tx->vout.size() ||
-            !pwallet->IsMine(wtx->tx->vout[pmn->outpoint.n])) {
-            throw JSONRPCError(RPC_MISC_ERROR, "Masternode collateral not owned by this wallet");
+        if (!externalIP.empty()) {
+            CService addr;
+            if (Lookup(externalIP.c_str(), addr, Params().GetDefaultPort(), false)) {
+                CMasternode* pmn = mnodeman.FindByIP(addr);
+                if (pmn) {
+                    COutPoint removedOutpoint = pmn->outpoint;
+                    pwallet->UnlockCoin(removedOutpoint);
+                    mnodeman.Remove(removedOutpoint);
+                    obj.pushKV("collateral", removedOutpoint.ToString());
+                    stoppedMasternode = true;
+                }
+            }
         }
 
-        COutPoint removedOutpoint = pmn->outpoint;
-
-        // Unlock the collateral UTXO so it can be spent again
-        pwallet->UnlockCoin(removedOutpoint);
-
-        // Remove from masternode list
-        mnodeman.Remove(removedOutpoint);
+        // Also unlock any locked collateral-sized UTXOs that may be orphaned
+        // (e.g., from a previous session where the masternode registration was lost)
+        std::set<COutPoint> lockedCoins;
+        pwallet->ListLockedCoins(lockedCoins);
+        int nUnlocked = 0;
+        for (const COutPoint& outpoint : lockedCoins) {
+            const CWalletTx* wtx = pwallet->GetWalletTx(outpoint.hash);
+            if (wtx && outpoint.n < wtx->tx->vout.size() &&
+                wtx->tx->vout[outpoint.n].nValue == params.nMasternodeCollateral) {
+                pwallet->UnlockCoin(outpoint);
+                nUnlocked++;
+                if (!stoppedMasternode) {
+                    obj.pushKV("collateral", outpoint.ToString());
+                }
+            }
+        }
 
         // Disable staking
         masternodeMiner.DisableStaking();
 
-        UniValue obj(UniValue::VOBJ);
-        obj.pushKV("status", "success");
-        obj.pushKV("message", "Masternode stopped, collateral unlocked");
-        obj.pushKV("collateral", removedOutpoint.ToString());
+        if (stoppedMasternode || nUnlocked > 0) {
+            obj.pushKV("status", "success");
+            if (stoppedMasternode)
+                obj.pushKV("message", "Masternode stopped, collateral unlocked");
+            else
+                obj.pushKV("message", "No registered masternode found, but unlocked " + std::to_string(nUnlocked) + " locked collateral UTXO(s)");
+        } else {
+            throw JSONRPCError(RPC_MISC_ERROR, "No active masternode or locked collateral found");
+        }
+
         return obj;
     }
 

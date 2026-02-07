@@ -114,25 +114,14 @@ bool CMasternodeMiner::SelectMasternodeCoins(std::vector<COutput>& vCoins,
         return false;
     }
 
-    // Build a COutput for the collateral — the UTXO is locked, never spent
+    // Build a COutput directly — the collateral is locked (intentionally) so
+    // AvailableCoins won't return it. We already verified ownership, amount,
+    // unspent status, and confirmations above, so construct COutput manually.
     LogPrintf("CMasternodeMiner: Using locked collateral %s at %s\n",
              pmn->outpoint.ToString(), pmn->addr.ToString());
 
-    // Find this output in the wallet's available coins to get a proper COutput
-    std::vector<COutput> vAvailableCoins;
-    pwallet->AvailableCoins(vAvailableCoins, true, nullptr, 1, MAX_MONEY, MAX_MONEY, 0, 0, 9999999);
-
-    for (const COutput& out : vAvailableCoins) {
-        COutPoint outpoint(out.tx->GetHash(), out.i);
-        if (outpoint == pmn->outpoint) {
-            vCoins.push_back(out);
-            return true;
-        }
-    }
-
-    LogPrintf("CMasternodeMiner: Collateral UTXO %s exists but not available in wallet (may be immature)\n",
-             pmn->outpoint.ToString());
-    return false;
+    vCoins.push_back(COutput(wtx, pmn->outpoint.n, nDepth, true, true));
+    return true;
 }
 
 bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
