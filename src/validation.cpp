@@ -3277,10 +3277,20 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationSta
     assert(pindexPrev != nullptr);
     const int nHeight = pindexPrev->nHeight + 1;
 
-    // Check proof of work
+    // Check proof of work / proof of stake difficulty
     const Consensus::Params& consensusParams = params.GetConsensus();
-    if (block.nBits != GetNextWorkRequired(pindexPrev, &block, consensusParams))
-        return state.DoS(100, false, REJECT_INVALID, "bad-diffbits", false, "incorrect proof of work");
+    unsigned int nExpectedPoW = GetNextWorkRequired(pindexPrev, &block, consensusParams);
+    if (block.nBits != nExpectedPoW) {
+        // If nBits doesn't match PoW, check if it matches PoS difficulty
+        // (PoS blocks use a separate difficulty calculation)
+        if (nHeight >= consensusParams.nMasternodeActivationHeight && consensusParams.fAllowPoSBlocks) {
+            unsigned int nExpectedPoS = GetNextPoSRequired(pindexPrev, consensusParams);
+            if (block.nBits != nExpectedPoS)
+                return state.DoS(100, false, REJECT_INVALID, "bad-diffbits", false, "incorrect proof of work/stake");
+        } else {
+            return state.DoS(100, false, REJECT_INVALID, "bad-diffbits", false, "incorrect proof of work");
+        }
+    }
 
     // Check against checkpoints
     if (fCheckpointsEnabled) {
