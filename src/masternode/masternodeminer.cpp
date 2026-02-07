@@ -120,7 +120,7 @@ bool CMasternodeMiner::SelectMasternodeCoins(std::vector<COutput>& vCoins,
     LogPrintf("CMasternodeMiner: Using locked collateral %s at %s\n",
              pmn->outpoint.ToString(), pmn->addr.ToString());
 
-    vCoins.push_back(COutput(wtx, pmn->outpoint.n, nDepth, true, true));
+    vCoins.push_back(COutput(wtx, pmn->outpoint.n, nDepth, true, true, true));
     return true;
 }
 

@@ -328,7 +328,7 @@ UniValue masternode(const JSONRPCRequest& request)
 
         // Also unlock any locked collateral-sized UTXOs that may be orphaned
         // (e.g., from a previous session where the masternode registration was lost)
-        std::set<COutPoint> lockedCoins;
+        std::vector<COutPoint> lockedCoins;
         pwallet->ListLockedCoins(lockedCoins);
         int nUnlocked = 0;
         for (const COutPoint& outpoint : lockedCoins) {
