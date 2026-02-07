@@ -105,9 +105,13 @@ BITCOIN_CORE_H = \
   indirectmap.h \
   init.h \
   key.h \
+  kernel.h \
   keystore.h \
   dbwrapper.h \
   limitedmap.h \
+  masternode/masternode.h \
+  masternode/masternodeman.h \
+  masternode/masternodeminer.h \
   memusage.h \
   merkleblock.h \
   miner.h \
@@ -198,6 +202,10 @@ libbitcoin_server_a_SOURCES = \
   httpserver.cpp \
   init.cpp \
   dbwrapper.cpp \
+  kernel.cpp \
+  masternode/masternode.cpp \
+  masternode/masternodeman.cpp \
+  masternode/masternodeminer.cpp \
   merkleblock.cpp \
   miner.cpp \
   net.cpp \
@@ -209,6 +217,7 @@ libbitcoin_server_a_SOURCES = \
   pow.cpp \
   rest.cpp \
   rpc/blockchain.cpp \
+  rpc/masternode.cpp \
   rpc/mining.cpp \
   rpc/misc.cpp \
   rpc/net.cpp \

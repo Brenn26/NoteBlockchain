@@ -226,6 +226,14 @@ bool Consensus::CheckTxInputs(const CTransaction& tx, CValidationState& state, c
                 strprintf("tried to spend coinbase at depth %d", nSpendHeight - coin.nHeight));
         }
 
+        // If prev is coinstake, check that it's matured
+        // Coinstake outputs must mature for 100 blocks before spending (same as coinbase)
+        if (coin.IsCoinStake() && nSpendHeight - coin.nHeight < COINBASE_MATURITY) {
+            return state.Invalid(false,
+                REJECT_INVALID, "bad-txns-premature-spend-of-coinstake",
+                strprintf("tried to spend coinstake at depth %d", nSpendHeight - coin.nHeight));
+        }
+
         // Check for negative or overflow input values
         nValueIn += coin.out.nValue;
         if (!MoneyRange(coin.out.nValue) || !MoneyRange(nValueIn)) {
@@ -234,13 +242,17 @@ bool Consensus::CheckTxInputs(const CTransaction& tx, CValidationState& state, c
     }
 
     const CAmount value_out = tx.GetValueOut();
-    if (nValueIn < value_out) {
+
+    // PoS: Coinstake transactions are allowed to create coins (the block reward)
+    // The actual reward validation happens in ConnectBlock
+    if (!tx.IsCoinStake() && nValueIn < value_out) {
         return state.DoS(100, false, REJECT_INVALID, "bad-txns-in-belowout", false,
             strprintf("value in (%s) < value out (%s)", FormatMoney(nValueIn), FormatMoney(value_out)));
     }
 
     // Tally transaction fees
-    const CAmount txfee_aux = nValueIn - value_out;
+    // PoS: Coinstake transactions create coins (negative fee), so set fee to 0
+    const CAmount txfee_aux = tx.IsCoinStake() ? 0 : nValueIn - value_out;
     if (!MoneyRange(txfee_aux)) {
         return state.DoS(100, false, REJECT_INVALID, "bad-txns-fee-outofrange");
     }

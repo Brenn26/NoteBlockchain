@@ -220,6 +220,8 @@ public:
 
     int getDefaultConfirmTarget() const;
 
+    CWallet *getWallet() const { return wallet; }
+
 private:
     CWallet *wallet;
     bool fHaveWatchOnly;
