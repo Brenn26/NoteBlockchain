@@ -1125,9 +1125,24 @@ bool ReadBlockFromDisk(CBlock& block, const CDiskBlockPos& pos, const Consensus:
         return error("%s: Deserialize or I/O error - %s at %s", __func__, e.what(), pos.ToString());
     }
 
-    // Check the header
-    if (!CheckProofOfWork(block.GetPoWHash(), block.nBits, consensusParams))
-        return error("ReadBlockFromDisk: Errors in block header at %s", pos.ToString());
+    // Check the header — PoS blocks use proof-of-stake (not proof-of-work),
+    // so skip the PoW hash check for them. PoS blocks are identified by having
+    // a coinstake transaction at vtx[1] (checked via IsProofOfStake()).
+    // NOTE: This is a redundant integrity check — blocks are fully validated
+    // (including CheckProofOfStake for PoS) BEFORE being written to disk.
+    // The block hash is also verified against the block index in the second
+    // overload, preventing any disk tampering from going undetected.
+    if (block.IsProofOfStake()) {
+        // Sanity check PoS block structure: must have nNonce=0, at least 2 txs,
+        // and vtx[1] must be a coinstake (already implied by IsProofOfStake)
+        if (block.nNonce != 0)
+            return error("ReadBlockFromDisk: PoS block has non-zero nNonce at %s", pos.ToString());
+        if (block.vtx.size() < 2)
+            return error("ReadBlockFromDisk: PoS block has fewer than 2 transactions at %s", pos.ToString());
+    } else {
+        if (!CheckProofOfWork(block.GetPoWHash(), block.nBits, consensusParams))
+            return error("ReadBlockFromDisk: Errors in block header at %s", pos.ToString());
+    }
 
     return true;
 }
