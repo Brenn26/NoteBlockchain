@@ -414,9 +414,10 @@ UniValue masternode(const JSONRPCRequest& request)
             "----------------\n"
             "* ONE masternode per PUBLIC IP address\n"
             "* Private IPs (192.168.x.x, 10.x.x.x) are NOT allowed\n"
-            "* Collateral is LOCKED, not spent - it remains in your wallet\n"
-            "* If collateral is spent (e.g. via raw transaction), masternode is removed\n"
-            "* Use 'masternode stop' to unlock collateral before spending\n\n"
+            "* Collateral is LOCKED in your wallet to prevent accidental spending\n"
+            "* Each PoS block spends the collateral and returns it in a new UTXO (automatic)\n"
+            "* If collateral is force-spent (e.g. via raw transaction), masternode is removed\n"
+            "* Use 'masternode stop' to unlock collateral before sending\n\n"
 
             "MULTIPLE MASTERNODES:\n"
             "---------------------\n"
@@ -479,13 +480,14 @@ UniValue getstakingstatus(const JSONRPCRequest& request)
     obj.pushKV("block_height", chainActive.Height());
 
     // Reward tracking
+    // Coinstake structure: vout[0]=empty marker, vout[1]=collateral return, vout[2]=block reward
     CAmount nTotalRewards = 0;
     int nBlocksProduced = 0;
     for (const auto& pair : pwallet->mapWallet) {
         const CWalletTx& wtx = pair.second;
         if (wtx.tx->IsCoinStake() && wtx.GetDepthInMainChain() > 0) {
-            if (wtx.tx->vout.size() >= 2 && pwallet->IsMine(wtx.tx->vout[1])) {
-                CAmount nReward = wtx.tx->vout[1].nValue;
+            if (wtx.tx->vout.size() >= 3 && pwallet->IsMine(wtx.tx->vout[2])) {
+                CAmount nReward = wtx.tx->vout[2].nValue;
                 if (nReward > 0) {
                     nTotalRewards += nReward;
                     nBlocksProduced++;
@@ -551,12 +553,11 @@ UniValue getposrewards(const JSONRPCRequest& request)
     for (const auto& pair : pwallet->mapWallet) {
         const CWalletTx& wtx = pair.second;
 
-        // Check if this is a proof transaction (masternode block)
-        // Proof tx structure: vout[0]=empty marker, vout[1]=reward
-        // Collateral is never spent, so vout[1] is pure reward
+        // Check if this is a coinstake transaction (masternode block)
+        // Coinstake structure: vout[0]=empty marker, vout[1]=collateral return, vout[2]=block reward
         if (wtx.tx->IsCoinStake() && wtx.GetDepthInMainChain() > 0) {
-            if (wtx.tx->vout.size() >= 2 && pwallet->IsMine(wtx.tx->vout[1])) {
-                CAmount nReward = wtx.tx->vout[1].nValue;
+            if (wtx.tx->vout.size() >= 3 && pwallet->IsMine(wtx.tx->vout[2])) {
+                CAmount nReward = wtx.tx->vout[2].nValue;
                 if (nReward > 0) {
                     nTotalRewards += nReward;
                     nPosBlocks++;

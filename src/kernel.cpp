@@ -19,7 +19,7 @@
 
 
 // Compute stake modifier for the next block
-// Mixes previous modifier with previous block hash for randomness
+// Mixes multiple entropy sources to prevent pre-computation attacks
 bool ComputeNextStakeModifier(const CBlockIndex* pindexPrev, uint64_t& nStakeModifier)
 {
     if (!pindexPrev) {
@@ -27,10 +27,18 @@ bool ComputeNextStakeModifier(const CBlockIndex* pindexPrev, uint64_t& nStakeMod
         return true;
     }
 
-    // Mix previous stake modifier with previous block hash
-    // This provides randomness and prevents pre-computation attacks
+    // Mix multiple entropy sources for better unpredictability:
+    // 1. Previous stake modifier (chain of all prior entropy)
+    // 2. Previous block hash (PoW miners can't easily manipulate without cost)
+    // 3. Previous block time (adds temporal entropy)
+    // 4. Previous block height (domain separation)
+    // 5. Previous block's hashMerkleRoot (depends on all transactions in block)
     CHashWriter ss(SER_GETHASH, 0);
-    ss << pindexPrev->nStakeModifier << pindexPrev->GetBlockHash();
+    ss << pindexPrev->nStakeModifier;
+    ss << pindexPrev->GetBlockHash();
+    ss << pindexPrev->nTime;
+    ss << pindexPrev->nHeight;
+    ss << pindexPrev->hashMerkleRoot;
     nStakeModifier = ss.GetHash().GetUint64(0);
 
     return true;
@@ -90,12 +98,15 @@ bool CheckStakeKernelHash(unsigned int nBits,
     // will naturally find the right difficulty level for PoS blocks.
 
     // Calculate weight based on coin value and age
-    // Weight = coins × (age / minimum_age)
+    // Weight = coins × (age / minimum_age), capped at 10x max
     // At minimum age (1 hour): weight = coins × 1
     // At 2x minimum age: weight = coins × 2, etc.
-    // This makes staking easier as coins age beyond the minimum
+    // Cap at 10x to prevent very old UTXOs from dominating
+    // This makes staking easier as coins age beyond the minimum, but not unboundedly
     int64_t nStakeAgeMultiplier = nStakeAge / params.nStakeMinAge;
     if (nStakeAgeMultiplier < 1) nStakeAgeMultiplier = 1; // At least 1x weight at minimum age
+    static const int64_t MAX_STAKE_AGE_MULTIPLIER = 10;
+    if (nStakeAgeMultiplier > MAX_STAKE_AGE_MULTIPLIER) nStakeAgeMultiplier = MAX_STAKE_AGE_MULTIPLIER;
     arith_uint256 bnCoinDayWeight = arith_uint256(prevTxOut.nValue / COIN) * nStakeAgeMultiplier;
 
     // Target is multiplied by coin-day weight
@@ -125,6 +136,13 @@ bool CheckProofOfStake(const CBlockIndex* pindexPrev,
 
     // First input must be from masternode collateral
     const CTxIn& txin = tx.vin[0];
+
+    // Bounds check on prevout.n to prevent memory allocation attacks
+    // A malicious block could set prevout.n to a very large value, causing
+    // the mutableTxPrev.vout.resize() below to allocate excessive memory
+    if (txin.prevout.n > 1000) {
+        return error("CheckProofOfStake: prevout.n (%u) is unreasonably large", txin.prevout.n);
+    }
 
     // Get the previous transaction output
     Coin coin;

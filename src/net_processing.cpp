@@ -2856,6 +2856,23 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     }
 
     else if (strCommand == NetMsgType::MNANNOUNCE) {
+        // Rate-limit: max 5 MNANNOUNCE messages per peer per 60 seconds
+        {
+            static std::map<NodeId, std::pair<int, int64_t>> mapMNAnnounceRateLimit;
+            int64_t nNow = GetTime();
+            auto& entry = mapMNAnnounceRateLimit[pfrom->GetId()];
+            if (nNow - entry.second > 60) {
+                entry.first = 0;
+                entry.second = nNow;
+            }
+            entry.first++;
+            if (entry.first > 5) {
+                LogPrint(BCLog::NET, "MNANNOUNCE rate limit exceeded from peer=%d, ignoring\n", pfrom->GetId());
+                Misbehaving(pfrom->GetId(), 10);
+                return true;
+            }
+        }
+
         // Receive masternode announcement from peer
         CMasternode mn;
         vRecv >> mn;
@@ -2926,6 +2943,19 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     }
 
     else if (strCommand == NetMsgType::GETMNLIST) {
+        // Rate-limit: max 1 GETMNLIST per peer per 60 seconds to prevent DoS amplification
+        {
+            static std::map<NodeId, int64_t> mapGetMNListLastRequest;
+            int64_t nNow = GetTime();
+            auto it = mapGetMNListLastRequest.find(pfrom->GetId());
+            if (it != mapGetMNListLastRequest.end() && nNow - it->second < 60) {
+                LogPrint(BCLog::NET, "GETMNLIST rate limit exceeded from peer=%d, ignoring\n", pfrom->GetId());
+                Misbehaving(pfrom->GetId(), 10);
+                return true;
+            }
+            mapGetMNListLastRequest[pfrom->GetId()] = nNow;
+        }
+
         // Peer is requesting our masternode list
         LogPrint(BCLog::NET, "Received masternode list request from peer=%d\n", pfrom->GetId());
 

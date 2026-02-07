@@ -1939,7 +1939,6 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
     blockundo.vtxundo.reserve(block.vtx.size() - 1);
     std::vector<PrecomputedTransactionData> txdata;
     txdata.reserve(block.vtx.size()); // Required so that pointers to individual PrecomputedTransactionData don't get invalidated
-    bool fIsProofOfStake = block.IsProofOfStake();
 
     for (unsigned int i = 0; i < block.vtx.size(); i++)
     {
@@ -2008,6 +2007,18 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
     // Masternode block: Verify coinstake structure and reward
     // The coinstake spends the collateral and returns it, plus the block reward
     if (block.IsProofOfStake()) {
+        // Reject PoS blocks before activation height
+        if (pindex->nHeight < chainparams.GetConsensus().nMasternodeActivationHeight)
+            return state.DoS(100, error("ConnectBlock(): PoS block at height %d before activation height %d",
+                           pindex->nHeight, chainparams.GetConsensus().nMasternodeActivationHeight),
+                           REJECT_INVALID, "bad-pos-too-early");
+
+        // Enforce minimum timestamp gap for PoS blocks (15 seconds)
+        // This prevents rapid-fire PoS blocks and timestamp manipulation
+        if (pindex->pprev && block.nTime < pindex->pprev->nTime + 15)
+            return state.DoS(50, error("ConnectBlock(): PoS block timestamp too close to previous block (%d vs %d)",
+                           block.nTime, pindex->pprev->nTime),
+                           REJECT_INVALID, "bad-pos-timestamp-gap");
         LogPrintf("ConnectBlock(): PoS block at height %d, nFees=%s, subsidy=%s, blockReward=%s, "
                  "coinstake vout_count=%d, vout[1]=%s, vout[2]=%s\n",
                  pindex->nHeight, FormatMoney(nFees),
@@ -2051,9 +2062,30 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
             return state.DoS(100, error("ConnectBlock(): coinstake pays too much (actual=%d vs limit=%d)", nReward, blockReward),
                            REJECT_INVALID, "bad-pos-amount");
 
+        // Consensus check: verify the coinstake input is a registered masternode collateral
+        // This prevents anyone from creating PoS blocks without an active masternode
+        {
+            const COutPoint& coinstakeOutpoint = block.vtx[1]->vin[0].prevout;
+            if (!mnodeman.Has(coinstakeOutpoint)) {
+                return state.DoS(100, error("ConnectBlock(): coinstake input %s is not a registered masternode collateral",
+                               coinstakeOutpoint.ToString()),
+                               REJECT_INVALID, "bad-pos-not-masternode");
+            }
+        }
+
         // All validation passed - set the PoS flag and compute stake modifier
         pindex->SetProofOfStake();
         ComputeNextStakeModifier(pindex->pprev, pindex->nStakeModifier);
+
+        // Update masternode last-seen time when it produces a valid block
+        // This prevents active masternodes from being expired while they're producing blocks
+        {
+            const COutPoint& coinstakeOutpoint = block.vtx[1]->vin[0].prevout;
+            CMasternode* pmn = mnodeman.Find(coinstakeOutpoint);
+            if (pmn) {
+                pmn->UpdateLastSeen();
+            }
+        }
     } else {
         // PoW: Validate coinbase reward
         if (block.vtx[0]->GetValueOut() > blockReward)
@@ -3139,9 +3171,15 @@ bool CheckBlock(const CBlock& block, CValidationState& state, const Consensus::P
         // PoW: First transaction must be coinbase, the rest must not be
         if (block.vtx.empty() || !block.vtx[0]->IsCoinBase())
             return state.DoS(100, false, REJECT_INVALID, "bad-cb-missing", false, "first tx is not coinbase");
-        for (unsigned int i = 1; i < block.vtx.size(); i++)
+        for (unsigned int i = 1; i < block.vtx.size(); i++) {
             if (block.vtx[i]->IsCoinBase())
                 return state.DoS(100, false, REJECT_INVALID, "bad-cb-multiple", false, "more than one coinbase");
+            // PoW blocks must NOT contain any coinstake transactions
+            // A fake coinstake could manipulate fee calculations (fee=0 for coinstake)
+            // and allow coin creation (coinstake is exempted from value-in >= value-out check)
+            if (block.vtx[i]->IsCoinStake())
+                return state.DoS(100, false, REJECT_INVALID, "bad-pow-coinstake", false, "coinstake in PoW block");
+        }
     }
 
     // Check transactions

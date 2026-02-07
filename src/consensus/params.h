@@ -88,7 +88,7 @@ struct Params {
     int nDigiSheildHFHeight;
     /* Reclaim Node parameters*/
     int64_t nMasternodeCollateral;          // Required collateral (e.g., 200000 * COIN)
-    int nMasternodePaymentPercent;          // Percentage of block reward (50%)
+    int nMasternodePaymentPercent;          // UNUSED: Was for split-reward model. PoS blocks now get full block reward.
     int nMasternodeActivationHeight;        // Block height when masternodes activate
     int nMasternodeMinimumConfirmations;    // Confirmations before collateral is valid (e.g., 100)
 
@@ -96,7 +96,7 @@ struct Params {
     bool fAllowPoSBlocks;                   // Enable PoS blocks to compete with PoW
     int64_t nStakeMinAge;                   // Minimum age before coins can stake (seconds)
     int64_t nStakeMaxAge;                   // Maximum stake age (0 = no maximum)
-    unsigned int nPoSTargetWeight;          // PoS weight factor (100 = 10x multiplier, 1000/100 = 10x easier than PoW)
+    unsigned int nPoSTargetWeight;          // UNUSED: Was for PoS weight multiplier. PoS now uses separate difficulty (GetNextPoSRequired).
     // Note: Block reward uses GetBlockSubsidy() - same dynamic reward for both PoW and PoS
 
 };

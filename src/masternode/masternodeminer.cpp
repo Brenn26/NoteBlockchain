@@ -385,12 +385,16 @@ void ThreadStakeMinter(CWallet* pwallet)
                         // Update masternode registration to point to new collateral
                         CMasternode* pmn = mnodeman.Find(oldOutpoint);
                         if (pmn) {
-                            COutPoint savedOutpoint = pmn->outpoint;
-                            pmn->outpoint = newOutpoint;
+                            // Copy MN data before removing (pointer invalidated by Remove)
+                            CMasternode mnCopy = *pmn;
+                            mnCopy.outpoint = newOutpoint;
+                            mnCopy.UpdateLastSeen();
                             // Re-index in masternode manager
-                            mnodeman.Remove(savedOutpoint);
-                            mnodeman.Add(*pmn);
-                            LogPrintf("ThreadStakeMinter: Updated masternode collateral %s -> %s\n",
+                            mnodeman.Remove(oldOutpoint);
+                            mnodeman.Add(mnCopy);
+                            // Persist to disk immediately to survive crashes
+                            mnodeman.Save();
+                            LogPrintf("ThreadStakeMinter: Updated masternode collateral %s -> %s (saved to disk)\n",
                                      oldOutpoint.ToString(), newOutpoint.ToString());
                         }
                     }
