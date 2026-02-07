@@ -2077,16 +2077,14 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
             return state.DoS(100, error("ConnectBlock(): coinstake pays too much (actual=%d vs limit=%d)", nReward, blockReward),
                            REJECT_INVALID, "bad-pos-amount");
 
-        // Consensus check: verify the coinstake input is a registered masternode collateral
-        // This prevents anyone from creating PoS blocks without an active masternode
-        {
-            const COutPoint& coinstakeOutpoint = block.vtx[1]->vin[0].prevout;
-            if (!mnodeman.Has(coinstakeOutpoint)) {
-                return state.DoS(100, error("ConnectBlock(): coinstake input %s is not a registered masternode collateral",
-                               coinstakeOutpoint.ToString()),
-                               REJECT_INVALID, "bad-pos-not-masternode");
-            }
-        }
+        // NOTE: We intentionally do NOT check mnodeman.Has() here because the masternode
+        // list is local/non-consensus state. A peer might not have received the MNANNOUNCE,
+        // or the outpoint may have changed after a coinstake (spend-and-return model).
+        // The proof-of-stake kernel hash check (CheckProofOfStake above) already validates:
+        // 1. The UTXO exists and has correct collateral amount
+        // 2. The kernel hash meets the difficulty target
+        // 3. The stake age is sufficient
+        // This is the consensus-level proof — masternode registration is a network-level concern.
 
         // All validation passed - set the PoS flag and compute stake modifier
         pindex->SetProofOfStake();
