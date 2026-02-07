@@ -8,7 +8,7 @@
 #endif
 
 #include <init.h>
-#include <wallet/wallet.h>
+
 #include <addrman.h>
 #include <amount.h>
 #include <chain.h>
@@ -22,8 +22,6 @@
 #include <key.h>
 #include <validation.h>
 #include <miner.h>
-#include <masternode/masternodeminer.h>
-#include <masternode/masternodeman.h>
 #include <netbase.h>
 #include <net.h>
 #include <net_processing.h>
@@ -610,7 +608,7 @@ void CleanupBlockRevFiles()
     // keeping a separate counter.  Once we hit a gap (or if 0 doesn't exist)
     // start removing block files.
     int nContigCounter = 0;
-    for (const auto& item : mapBlockFiles) {
+    for (const std::pair<std::string, fs::path>& item : mapBlockFiles) {
         if (atoi(item.first) == nContigCounter) {
             nContigCounter++;
             continue;
@@ -1744,20 +1742,6 @@ bool AppInitMain()
 
 #ifdef ENABLE_WALLET
     StartWallets(scheduler);
-
-    // Always start the staking thread, but only enable it if user requests
-    if (!::vpwallets.empty()) {
-        CWallet* pwallet = ::vpwallets[0];
-        if (pwallet) {
-            // Enable staking if -staking=1 is set in config
-            if (gArgs.GetBoolArg("-staking", false)) {
-                masternodeMiner.EnableStaking();
-                uiInterface.InitMessage(_("Starting masternode staking..."));
-            }
-            // Always create the thread - it will wait for EnableStaking() to be called
-            threadGroup.create_thread(boost::bind(&ThreadStakeMinter, pwallet));
-        }
-    }
 #endif
 
     return true;

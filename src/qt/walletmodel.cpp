@@ -33,8 +33,6 @@
 
 #include <QDebug>
 #include <QMessageBox>
-
-using namespace boost::placeholders;
 #include <QSet>
 #include <QTimer>
 

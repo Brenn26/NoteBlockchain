@@ -29,10 +29,6 @@
 #include <util.h>
 #include <utilmoneystr.h>
 #include <utilstrencodings.h>
-#include <masternode/masternodeman.h>
-#include <coins.h>
-#include <script/standard.h>
-#include <keystore.h>
 #include <array>
 #include <memory>
 
@@ -1118,12 +1114,8 @@ void static ProcessGetBlockData(CNode* pfrom, const Consensus::Params& consensus
         } else {
             // Send block from disk
             std::shared_ptr<CBlock> pblockRead = std::make_shared<CBlock>();
-            if (!ReadBlockFromDisk(*pblockRead, (*mi).second, consensusParams)) {
-                // Block should be on disk but isn't - database corruption or disk issue
-                LogPrintf("ERROR: Cannot load block %s from disk (height=%d, status=%d)\n",
-                         inv.hash.ToString(), (*mi).second->nHeight, (*mi).second->nStatus);
-                return; // Don't send the block, don't crash
-            }
+            if (!ReadBlockFromDisk(*pblockRead, (*mi).second, consensusParams))
+                assert(!"cannot load block from disk");
             pblock = pblockRead;
         }
         if (inv.type == MSG_BLOCK)
@@ -1755,9 +1747,6 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             // nodes)
             connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::SENDHEADERS));
         }
-        // Request masternode list from peer
-        connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::GETMNLIST));
-        LogPrint(BCLog::NET, "Requesting masternode list from peer=%d\n", pfrom->GetId());
         if (pfrom->nVersion >= SHORT_IDS_BLOCKS_VERSION) {
             // Tell our peer we are willing to provide version 1 or 2 cmpctblocks
             // However, we do not request new block announcements using
@@ -2853,87 +2842,6 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     else if (strCommand == NetMsgType::NOTFOUND) {
         // We do not care about the NOTFOUND message, but logging an Unknown Command
         // message would be undesirable as we transmit it ourselves.
-    }
-
-    else if (strCommand == NetMsgType::MNANNOUNCE) {
-        // Receive masternode announcement from peer
-        CMasternode mn;
-        vRecv >> mn;
-
-        LogPrint(BCLog::NET, "Received masternode announcement %s from peer=%d\n",
-                mn.outpoint.ToString(), pfrom->GetId());
-
-        // CRITICAL SECURITY: Verify signature before accepting
-        if (!mn.VerifySignature()) {
-            LogPrint(BCLog::NET, "Invalid masternode signature from peer=%d, rejecting\n", pfrom->GetId());
-            Misbehaving(pfrom->GetId(), 20); // Punish peer for invalid signature
-            return true;
-        }
-
-        // CRITICAL SECURITY: Verify UTXO exists and matches the claimed pubkey
-        {
-            LOCK(cs_main);
-            Coin coin;
-            if (!pcoinsTip || !pcoinsTip->GetCoin(mn.outpoint, coin) || coin.IsSpent()) {
-                LogPrint(BCLog::NET, "Masternode UTXO %s not found or spent, rejecting from peer=%d\n",
-                        mn.outpoint.ToString(), pfrom->GetId());
-                Misbehaving(pfrom->GetId(), 10); // Punish peer for non-existent UTXO
-                return true;
-            }
-
-            // Verify UTXO scriptPubKey corresponds to the announced pubkey
-            CTxDestination dest;
-            if (!ExtractDestination(coin.out.scriptPubKey, dest)) {
-                LogPrint(BCLog::NET, "Failed to extract destination from UTXO %s, rejecting\n",
-                        mn.outpoint.ToString());
-                Misbehaving(pfrom->GetId(), 10);
-                return true;
-            }
-
-            // Extract CKeyID from CTxDestination (must be P2PKH for masternodes)
-            const CKeyID* keyID = boost::get<CKeyID>(&dest);
-            if (!keyID) {
-                LogPrint(BCLog::NET, "Masternode UTXO %s is not P2PKH, rejecting\n",
-                        mn.outpoint.ToString());
-                Misbehaving(pfrom->GetId(), 20);
-                return true;
-            }
-            if (*keyID != mn.pubKeyMasternode.GetID()) {
-                LogPrint(BCLog::NET, "Masternode pubkey doesn't match UTXO, rejecting from peer=%d\n",
-                        pfrom->GetId());
-                Misbehaving(pfrom->GetId(), 20); // Punish peer for mismatched pubkey
-                return true;
-            }
-
-            // Verify UTXO has correct collateral amount
-            if (coin.out.nValue != Params().GetConsensus().nMasternodeCollateral) {
-                LogPrint(BCLog::NET, "Masternode UTXO %s has wrong collateral amount, rejecting\n",
-                        mn.outpoint.ToString());
-                Misbehaving(pfrom->GetId(), 20);
-                return true;
-            }
-        }
-
-        // All validation passed - add to our masternode list
-        if (mnodeman.Add(mn)) {
-            LogPrint(BCLog::NET, "Accepted masternode announcement %s, relaying\n",
-                    mn.outpoint.ToString());
-            // Relay to other peers only after full verification
-            connman->ForEachNode([&mn, &connman](CNode* pnode) {
-                connman->PushMessage(pnode, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::MNANNOUNCE, mn));
-            });
-        }
-    }
-
-    else if (strCommand == NetMsgType::GETMNLIST) {
-        // Peer is requesting our masternode list
-        LogPrint(BCLog::NET, "Received masternode list request from peer=%d\n", pfrom->GetId());
-
-        // Send all masternodes
-        std::vector<CMasternode> vMasternodes = mnodeman.GetFullMasternodeVector();
-        for (const auto& mn : vMasternodes) {
-            connman->PushMessage(pfrom, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::MNANNOUNCE, mn));
-        }
     }
 
     else {

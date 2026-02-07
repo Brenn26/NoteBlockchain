@@ -237,14 +237,6 @@ extern const char *GETBLOCKTXN;
  * @since protocol version 70014 as described by BIP 152
  */
 extern const char *BLOCKTXN;
-/**
- * Masternode announcement - broadcasts a masternode to the network
- */
-extern const char *MNANNOUNCE;
-/**
- * Request masternode list from peers
- */
-extern const char *GETMNLIST;
 };
 
 /* Get a vector of all valid message types (see above) */

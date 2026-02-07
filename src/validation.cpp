@@ -17,8 +17,6 @@
 #include <cuckoocache.h>
 #include <hash.h>
 #include <init.h>
-#include <kernel.h>
-#include <masternode/masternodeman.h>
 #include <policy/fees.h>
 #include <policy/policy.h>
 #include <policy/rbf.h>
@@ -567,10 +565,6 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
     // Coinbase is only valid in a block, not as a loose transaction
     if (tx.IsCoinBase())
         return state.DoS(100, false, REJECT_INVALID, "coinbase");
-
-    // Coinstake is only valid in a block, not as a loose transaction
-    if (tx.IsCoinStake())
-        return state.DoS(100, false, REJECT_INVALID, "coinstake");
 
     // Reject transactions with witness before segregated witness activates (override with -prematurewitness)
     bool witnessEnabled = IsWitnessEnabled(chainActive.Tip(), chainparams.GetConsensus());
@@ -1592,7 +1586,6 @@ DisconnectResult CChainState::DisconnectBlock(const CBlock& block, const CBlockI
         const CTransaction &tx = *(block.vtx[i]);
         uint256 hash = tx.GetHash();
         bool is_coinbase = tx.IsCoinBase();
-        bool is_coinstake = tx.IsCoinStake();
 
         // Check that all outputs are available and match the outputs in the block itself
         // exactly.
@@ -1601,8 +1594,7 @@ DisconnectResult CChainState::DisconnectBlock(const CBlock& block, const CBlockI
                 COutPoint out(hash, o);
                 Coin coin;
                 bool is_spent = view.SpendCoin(out, &coin);
-                if (!is_spent || tx.vout[o] != coin.out || pindex->nHeight != coin.nHeight ||
-                    is_coinbase != coin.fCoinBase || is_coinstake != coin.fCoinStake) {
+                if (!is_spent || tx.vout[o] != coin.out || pindex->nHeight != coin.nHeight || is_coinbase != coin.fCoinBase) {
                     fClean = false; // transaction output mismatch
                 }
             }
@@ -1610,25 +1602,18 @@ DisconnectResult CChainState::DisconnectBlock(const CBlock& block, const CBlockI
 
         // restore inputs
         if (i > 0) { // not coinbases
-            // For proof tx (masternode block, i==1, coinstake), the collateral input
-            // was never spent, so there are no undo entries. Skip input restoration.
-            bool fIsProofTx = (i == 1 && is_coinstake && block.IsProofOfStake());
-            if (fIsProofTx) {
-                // No inputs to restore - collateral was never spent
-            } else {
-                CTxUndo &txundo = blockUndo.vtxundo[i-1];
-                if (txundo.vprevout.size() != tx.vin.size()) {
-                    error("DisconnectBlock(): transaction and undo data inconsistent");
-                    return DISCONNECT_FAILED;
-                }
-                for (unsigned int j = tx.vin.size(); j-- > 0;) {
-                    const COutPoint &out = tx.vin[j].prevout;
-                    int res = ApplyTxInUndo(std::move(txundo.vprevout[j]), view, out);
-                    if (res == DISCONNECT_FAILED) return DISCONNECT_FAILED;
-                    fClean = fClean && res != DISCONNECT_UNCLEAN;
-                }
-                // At this point, all of txundo.vprevout should have been moved out.
+            CTxUndo &txundo = blockUndo.vtxundo[i-1];
+            if (txundo.vprevout.size() != tx.vin.size()) {
+                error("DisconnectBlock(): transaction and undo data inconsistent");
+                return DISCONNECT_FAILED;
             }
+            for (unsigned int j = tx.vin.size(); j-- > 0;) {
+                const COutPoint &out = tx.vin[j].prevout;
+                int res = ApplyTxInUndo(std::move(txundo.vprevout[j]), view, out);
+                if (res == DISCONNECT_FAILED) return DISCONNECT_FAILED;
+                fClean = fClean && res != DISCONNECT_UNCLEAN;
+            }
+            // At this point, all of txundo.vprevout should have been moved out.
         }
     }
 
@@ -1926,15 +1911,6 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
 
     CCheckQueueControl<CScriptCheck> control(fScriptChecks && nScriptCheckThreads ? &scriptcheckqueue : nullptr);
 
-    // PoS: Verify stake kernel hash BEFORE processing transactions
-    // This must be done before UpdateCoins removes the staked UTXO from the view
-    // Note: We validate the kernel here but defer setting PoS flags until after all validation
-    uint256 hashProofOfStake;
-    if (block.IsProofOfStake()) {
-        if (!CheckProofOfStake(pindex->pprev, *block.vtx[1], pindex->nBits, block.nTime, hashProofOfStake, view, chainparams.GetConsensus()))
-            return state.DoS(100, error("ConnectBlock(): proof-of-stake check failed"), REJECT_INVALID, "bad-pos-stake");
-    }
-
     std::vector<int> prevheights;
     CAmount nFees = 0;
     int nInputs = 0;
@@ -1942,20 +1918,13 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
     blockundo.vtxundo.reserve(block.vtx.size() - 1);
     std::vector<PrecomputedTransactionData> txdata;
     txdata.reserve(block.vtx.size()); // Required so that pointers to individual PrecomputedTransactionData don't get invalidated
-    // Determine if this is a masternode proof tx block (collateral not spent)
-    bool fIsProofOfStake = block.IsProofOfStake();
-
     for (unsigned int i = 0; i < block.vtx.size(); i++)
     {
         const CTransaction &tx = *(block.vtx[i]);
 
         nInputs += tx.vin.size();
 
-        // The proof tx (i==1 in masternode blocks) references but does NOT spend the collateral.
-        // Skip CheckTxInputs for it (like coinbase), since it creates value from nothing.
-        bool fIsProofTx = (i == 1 && fIsProofOfStake && tx.IsCoinStake());
-
-        if (!tx.IsCoinBase() && !fIsProofTx)
+        if (!tx.IsCoinBase())
         {
             CAmount txfee = 0;
             if (!Consensus::CheckTxInputs(tx, state, view, pindex->nHeight, txfee)) {
@@ -1991,10 +1960,6 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
                              REJECT_INVALID, "bad-blk-sigops");
 
         txdata.emplace_back(tx);
-
-        // Verify signatures for non-coinbase transactions.
-        // For the proof tx, we still verify the signature to prove ownership
-        // of the collateral's private key, even though the UTXO is not spent.
         if (!tx.IsCoinBase())
         {
             std::vector<CScriptCheck> vChecks;
@@ -2009,98 +1974,17 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
         if (i > 0) {
             blockundo.vtxundo.push_back(CTxUndo());
         }
-
-        if (fIsProofTx) {
-            // Proof tx: add outputs to UTXO set but do NOT spend the collateral input.
-            // The collateral remains in the UTXO set permanently.
-            AddCoins(view, tx, pindex->nHeight);
-        } else {
-            UpdateCoins(tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back(), pindex->nHeight);
-        }
+        UpdateCoins(tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back(), pindex->nHeight);
     }
     int64_t nTime3 = GetTimeMicros(); nTimeConnect += nTime3 - nTime2;
     LogPrint(BCLog::BENCH, "      - Connect %u transactions: %.2fms (%.3fms/tx, %.3fms/txin) [%.2fs (%.2fms/blk)]\n", (unsigned)block.vtx.size(), MILLI * (nTime3 - nTime2), MILLI * (nTime3 - nTime2) / block.vtx.size(), nInputs <= 1 ? 0 : MILLI * (nTime3 - nTime2) / (nInputs-1), nTimeConnect * MICRO, nTimeConnect * MILLI / nBlocksTotal);
 
     CAmount blockReward = nFees + GetBlockSubsidy(pindex->nHeight, chainparams.GetConsensus());
-
-    // Masternode block: Verify proof tx structure and reward
-    // The proof tx references the collateral UTXO (not spent) and receives the block reward
-    if (block.IsProofOfStake()) {
-        // Verify proof tx structure: must have exactly 2 outputs
-        // Output 0: empty (kernel marker), Output 1: block reward to MN operator
-        if (block.vtx[1]->vout.size() != 2)
-            return state.DoS(100, error("ConnectBlock(): proof tx must have exactly 2 outputs, got %d", block.vtx[1]->vout.size()),
-                           REJECT_INVALID, "bad-pos-outputs");
-
-        // Verify output 0 is empty (kernel marker)
-        if (!block.vtx[1]->vout[0].IsNull())
-            return state.DoS(100, error("ConnectBlock(): proof tx output 0 must be empty"),
-                           REJECT_INVALID, "bad-pos-kernel");
-
-        // Verify the input (must have exactly 1 input referencing the collateral)
-        if (block.vtx[1]->vin.size() != 1)
-            return state.DoS(100, error("ConnectBlock(): proof tx must have exactly 1 input, got %d", block.vtx[1]->vin.size()),
-                           REJECT_INVALID, "bad-pos-inputs");
-
-        // Verify the collateral UTXO exists and is unspent
-        // Since we never spend the collateral, it should always be in the UTXO set
-        const COutPoint& prevout = block.vtx[1]->vin[0].prevout;
-        const Coin& coin = view.AccessCoin(prevout);
-        if (coin.IsSpent())
-            return state.DoS(100, error("ConnectBlock(): proof tx collateral UTXO is spent"),
-                           REJECT_INVALID, "bad-pos-input-spent");
-
-        // Verify collateral amount matches masternode requirement
-        if (coin.out.nValue != chainparams.GetConsensus().nMasternodeCollateral)
-            return state.DoS(100, error("ConnectBlock(): proof tx collateral value %d doesn't match required %d",
-                           coin.out.nValue, chainparams.GetConsensus().nMasternodeCollateral),
-                           REJECT_INVALID, "bad-pos-input-value");
-
-        // Verify block reward goes to the collateral's address
-        if (block.vtx[1]->vout[1].scriptPubKey != coin.out.scriptPubKey)
-            return state.DoS(100, error("ConnectBlock(): proof tx reward doesn't go to collateral address"),
-                           REJECT_INVALID, "bad-pos-destination");
-
-        // Verify reward amount doesn't exceed block reward
-        CAmount nReward = block.vtx[1]->vout[1].nValue;
-        if (nReward > blockReward)
-            return state.DoS(100, error("ConnectBlock(): proof tx pays too much (actual=%d vs limit=%d)", nReward, blockReward),
-                           REJECT_INVALID, "bad-pos-amount");
-
-        // Verify IP uniqueness - one masternode per IP address
-        const COutPoint& masternodeOutpoint = block.vtx[1]->vin[0].prevout;
-        CMasternode* pmn = mnodeman.Find(masternodeOutpoint);
-
-        if (!pmn) {
-            LogPrintf("ConnectBlock(): Warning - Masternode %s not found in registry\n", masternodeOutpoint.ToString());
-        } else {
-            CService mnAddr = pmn->addr;
-            int countWithSameIP = 0;
-
-            for (const auto& mn : mnodeman.GetFullMasternodeVector()) {
-                if (mn.addr == mnAddr && mn.IsEnabled()) {
-                    countWithSameIP++;
-                    if (countWithSameIP > 1) {
-                        return state.DoS(100, error("ConnectBlock(): Multiple masternodes detected at IP %s", mnAddr.ToString()),
-                                       REJECT_INVALID, "bad-pos-duplicate-ip");
-                    }
-                }
-            }
-        }
-
-        // All validation passed - set the PoS flag and compute stake modifier
-        pindex->SetProofOfStake();
-        ComputeNextStakeModifier(pindex->pprev, pindex->nStakeModifier);
-    } else {
-        // PoW: Validate coinbase reward
-        if (block.vtx[0]->GetValueOut() > blockReward)
-            return state.DoS(100, error("ConnectBlock(): coinbase pays too much (actual=%d vs limit=%d)",
-                                   block.vtx[0]->GetValueOut(), blockReward),
-                           REJECT_INVALID, "bad-cb-amount");
-
-        // Set stake modifier for PoW blocks too
-        ComputeNextStakeModifier(pindex->pprev, pindex->nStakeModifier);
-    }
+    if (block.vtx[0]->GetValueOut() > blockReward)
+        return state.DoS(100,
+                         error("ConnectBlock(): coinbase pays too much (actual=%d vs limit=%d)",
+                               block.vtx[0]->GetValueOut(), blockReward),
+                               REJECT_INVALID, "bad-cb-amount");
 
     if (!control.Wait())
         return state.DoS(100, error("%s: CheckQueue failed", __func__), REJECT_INVALID, "block-validation-failed");
@@ -3120,9 +3004,7 @@ bool CheckBlock(const CBlock& block, CValidationState& state, const Consensus::P
 
     // Check that the header is valid (particularly PoW).  This is mostly
     // redundant with the call in AcceptBlockHeader.
-    // PoS blocks don't need PoW validation
-    bool fCheckPOWForBlock = fCheckPOW && block.IsProofOfWork();
-    if (!CheckBlockHeader(block, state, consensusParams, fCheckPOWForBlock))
+    if (!CheckBlockHeader(block, state, consensusParams, fCheckPOW))
         return false;
 
     // Check the merkle root.
@@ -3149,37 +3031,12 @@ bool CheckBlock(const CBlock& block, CValidationState& state, const Consensus::P
     if (block.vtx.empty() || block.vtx.size() * WITNESS_SCALE_FACTOR > MAX_BLOCK_WEIGHT || ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * WITNESS_SCALE_FACTOR > MAX_BLOCK_WEIGHT)
         return state.DoS(100, false, REJECT_INVALID, "bad-blk-length", false, "size limits failed");
 
-    // PoS: Enforce PoS blocks must have nNonce=0
-    // This ensures PoS blocks are properly identified at header level
-    if (block.IsProofOfStake() && block.nNonce != 0)
-        return state.DoS(100, false, REJECT_INVALID, "bad-pos-nonce", false, "PoS block must have nNonce=0");
-
-    // PoS: Check if this is a Proof-of-Stake block
-    if (block.IsProofOfStake()) {
-        // PoS blocks require at least 2 transactions (coinbase + coinstake)
-        if (block.vtx.size() < 2)
-            return state.DoS(100, false, REJECT_INVALID, "bad-pos-txcount", false, "PoS block must have at least 2 transactions");
-
-        // Second transaction must be coinstake
-        if (!block.vtx[1]->IsCoinStake())
-            return state.DoS(100, false, REJECT_INVALID, "bad-pos-coinstake", false, "second tx in PoS block is not coinstake");
-
-        // Coinbase must be empty for PoS
-        if (!block.vtx[0]->vout[0].IsEmpty())
-            return state.DoS(100, false, REJECT_INVALID, "bad-pos-coinbase", false, "coinbase not empty in PoS block");
-
-        // Only one coinstake allowed
-        for (unsigned int i = 2; i < block.vtx.size(); i++)
-            if (block.vtx[i]->IsCoinStake())
-                return state.DoS(100, false, REJECT_INVALID, "bad-pos-multiple-coinstake", false, "multiple coinstakes in block");
-    } else {
-        // PoW: First transaction must be coinbase, the rest must not be
-        if (block.vtx.empty() || !block.vtx[0]->IsCoinBase())
-            return state.DoS(100, false, REJECT_INVALID, "bad-cb-missing", false, "first tx is not coinbase");
-        for (unsigned int i = 1; i < block.vtx.size(); i++)
-            if (block.vtx[i]->IsCoinBase())
-                return state.DoS(100, false, REJECT_INVALID, "bad-cb-multiple", false, "more than one coinbase");
-    }
+    // First transaction must be coinbase, the rest must not be
+    if (block.vtx.empty() || !block.vtx[0]->IsCoinBase())
+        return state.DoS(100, false, REJECT_INVALID, "bad-cb-missing", false, "first tx is not coinbase");
+    for (unsigned int i = 1; i < block.vtx.size(); i++)
+        if (block.vtx[i]->IsCoinBase())
+            return state.DoS(100, false, REJECT_INVALID, "bad-cb-multiple", false, "more than one coinbase");
 
     // Check transactions
     for (const auto& tx : block.vtx)
@@ -3421,10 +3278,7 @@ bool CChainState::AcceptBlockHeader(const CBlockHeader& block, CValidationState&
             return true;
         }
 
-        // PoS blocks set nNonce=0, so we can use this to detect them at header level
-        // Only skip PoW check if nNonce is 0 (likely PoS block)
-        bool fCheckPOW = (block.nNonce != 0);
-        if (!CheckBlockHeader(block, state, chainparams.GetConsensus(), fCheckPOW))
+        if (!CheckBlockHeader(block, state, chainparams.GetConsensus()))
             return error("%s: Consensus::CheckBlockHeader: %s, %s", __func__, hash.ToString(), FormatStateMessage(state));
 
         // Get prev block index

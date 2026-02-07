@@ -15,27 +15,17 @@ unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHead
 {
     //Get next height and compare to forkheight
     if (pindexLast->nHeight + 1 > params.nDigiSheildHFHeight){
-        return DigiShieldV4(pindexLast, pblock, params);
+        return DigiShieldV4(pindexLast,params);
     }
     return GetNextWorkRequiredLegacy(pindexLast,pblock,params);
 }
 
-unsigned int DigiShieldV4(const CBlockIndex* pindexLast, const CBlockHeader *pblock, const Consensus::Params& params)
+unsigned int DigiShieldV4(const CBlockIndex* pindexLast, const Consensus::Params& params)
 {
-    const arith_uint256 powLimit = UintToArith256(params.powLimit);
-
-    // Special difficulty rule for testnet:
-    // If the new block's timestamp is more than 2* target spacing
-    // then allow mining of a min-difficulty block.
-    if (params.fPowAllowMinDifficultyBlocks)
-    {
-        if (pblock->GetBlockTime() > pindexLast->GetBlockTime() + params.nPowTargetSpacing * 2)
-            return powLimit.GetCompact();
-    }
-
     // find first block in averaging interval
     // Go back by what we want to be nAveragingInterval blocks per algo
     const CBlockIndex* pindexFirst = pindexLast;
+    const arith_uint256 powLimit = UintToArith256(params.powLimit);
     for (int i = 0; pindexFirst && i < params.nAveragingInterval; i++)
     {
         pindexFirst = pindexFirst->pprev;
@@ -153,71 +143,6 @@ unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nF
 
     if (bnNew > bnPowLimit)
         bnNew = bnPowLimit;
-
-    return bnNew.GetCompact();
-}
-
-unsigned int GetNextPoSRequired(const CBlockIndex* pindexLast, const Consensus::Params& params)
-{
-    const arith_uint256 posLimit = UintToArith256(params.powLimit);
-
-    // Target spacing for PoS blocks (in seconds)
-    // With PoW at ~30 seconds, targeting 45 seconds for PoS gives ~60% PoW / 40% PoS split
-    // PoW: 2 blocks/min, PoS: 1.33 blocks/min = 60/40 ratio
-    const int64_t nTargetSpacing = 45;
-
-    // Number of PoS blocks to look back for difficulty adjustment
-    const int nPoSBlocksToCheck = 10;
-
-    // Find the last N PoS blocks
-    std::vector<const CBlockIndex*> vPoSBlocks;
-    const CBlockIndex* pindex = pindexLast;
-
-    while (pindex && vPoSBlocks.size() < nPoSBlocksToCheck) {
-        if (pindex->IsProofOfStake()) {
-            vPoSBlocks.push_back(pindex);
-        }
-        pindex = pindex->pprev;
-    }
-
-    // If we don't have enough PoS blocks yet, use minimum difficulty
-    if (vPoSBlocks.size() < 2) {
-        LogPrintf("GetNextPoSRequired: Not enough PoS blocks yet, using min difficulty\n");
-        return posLimit.GetCompact();
-    }
-
-    // Calculate average time between PoS blocks
-    int64_t nTotalTime = vPoSBlocks.front()->GetBlockTime() - vPoSBlocks.back()->GetBlockTime();
-    int64_t nBlockCount = vPoSBlocks.size() - 1;
-    int64_t nAverageSpacing = nTotalTime / nBlockCount;
-
-    LogPrintf("GetNextPoSRequired: Found %d PoS blocks, avg spacing=%d seconds (target=%d)\n",
-             vPoSBlocks.size(), nAverageSpacing, nTargetSpacing);
-
-    // Get current PoS difficulty from the last PoS block
-    arith_uint256 bnNew;
-    bnNew.SetCompact(vPoSBlocks.front()->nBits);
-
-    // Adjust difficulty based on actual vs target spacing
-    // If blocks come faster than target, increase difficulty (decrease target)
-    // If blocks come slower than target, decrease difficulty (increase target)
-    bnNew *= nAverageSpacing;
-    bnNew /= nTargetSpacing;
-
-    // Limit adjustment to 4x in either direction
-    arith_uint256 bnOld;
-    bnOld.SetCompact(vPoSBlocks.front()->nBits);
-
-    if (bnNew < bnOld / 4)
-        bnNew = bnOld / 4;
-    if (bnNew > bnOld * 4)
-        bnNew = bnOld * 4;
-
-    // Don't allow easier than minimum difficulty
-    if (bnNew > posLimit)
-        bnNew = posLimit;
-
-    LogPrintf("GetNextPoSRequired: New PoS difficulty target=%s\n", bnNew.ToString());
 
     return bnNew.GetCompact();
 }

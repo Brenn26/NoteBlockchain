@@ -25,8 +25,6 @@
 #include <QDebug>
 #include <QTimer>
 
-using namespace boost::placeholders;
-
 class CBlockIndex;
 
 static int64_t nLastHeaderTipUpdateNotification = 0;

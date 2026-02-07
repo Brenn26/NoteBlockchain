@@ -1744,8 +1744,8 @@ CAmount CWalletTx::GetDebit(const isminefilter& filter) const
 
 CAmount CWalletTx::GetCredit(const isminefilter& filter) const
 {
-    // Must wait until coinbase/coinstake is safely deep enough in the chain before valuing it
-    if (GetBlocksToMaturity() > 0)
+    // Must wait until coinbase is safely deep enough in the chain before valuing it
+    if (IsCoinBase() && GetBlocksToMaturity() > 0)
         return 0;
 
     CAmount credit = 0;
@@ -1773,8 +1773,7 @@ CAmount CWalletTx::GetCredit(const isminefilter& filter) const
 
 CAmount CWalletTx::GetImmatureCredit(bool fUseCache) const
 {
-    // Both coinbase and coinstake outputs show as immature while maturing
-    if (GetBlocksToMaturity() > 0 && IsInMainChain()) {
+    if (IsCoinBase() && GetBlocksToMaturity() > 0 && IsInMainChain()) {
         if (fUseCache && fImmatureCreditCached)
             return nImmatureCreditCached;
         nImmatureCreditCached = pwallet->GetCredit(*tx, ISMINE_SPENDABLE);
@@ -1790,8 +1789,8 @@ CAmount CWalletTx::GetAvailableCredit(bool fUseCache) const
     if (pwallet == nullptr)
         return 0;
 
-    // Must wait until coinbase/coinstake is safely deep enough in the chain before valuing it
-    if (GetBlocksToMaturity() > 0)
+    // Must wait until coinbase is safely deep enough in the chain before valuing it
+    if (IsCoinBase() && GetBlocksToMaturity() > 0)
         return 0;
 
     if (fUseCache && fAvailableCreditCached)
@@ -1815,8 +1814,7 @@ CAmount CWalletTx::GetAvailableCredit(bool fUseCache) const
 
 CAmount CWalletTx::GetImmatureWatchOnlyCredit(const bool fUseCache) const
 {
-    // Both coinbase and coinstake outputs show as immature while maturing
-    if (GetBlocksToMaturity() > 0 && IsInMainChain()) {
+    if (IsCoinBase() && GetBlocksToMaturity() > 0 && IsInMainChain()) {
         if (fUseCache && fImmatureWatchCreditCached)
             return nImmatureWatchCreditCached;
         nImmatureWatchCreditCached = pwallet->GetCredit(*tx, ISMINE_WATCH_ONLY);
@@ -1832,8 +1830,8 @@ CAmount CWalletTx::GetAvailableWatchOnlyCredit(const bool fUseCache) const
     if (pwallet == nullptr)
         return 0;
 
-    // Must wait until coinbase/coinstake is safely deep enough in the chain before valuing it
-    if (GetBlocksToMaturity() > 0)
+    // Must wait until coinbase is safely deep enough in the chain before valuing it
+    if (IsCoinBase() && GetBlocksToMaturity() > 0)
         return 0;
 
     if (fUseCache && fAvailableWatchCreditCached)
@@ -2122,9 +2120,7 @@ void CWallet::AvailableCoins(std::vector<COutput>& vCoins, bool fOnlySafe, const
             if (!CheckFinalTx(*pcoin->tx))
                 continue;
 
-            // Check maturity for both coinbase AND coinstake outputs
-            // Both need to mature for 100 blocks before spending
-            if (pcoin->GetBlocksToMaturity() > 0)
+            if (pcoin->IsCoinBase() && pcoin->GetBlocksToMaturity() > 0)
                 continue;
 
             int nDepth = pcoin->GetDepthInMainChain();
@@ -3347,8 +3343,7 @@ std::map<CTxDestination, CAmount> CWallet::GetAddressBalances()
             if (!pcoin->IsTrusted())
                 continue;
 
-            // Check maturity for both coinbase and coinstake
-            if (pcoin->GetBlocksToMaturity() > 0)
+            if (pcoin->IsCoinBase() && pcoin->GetBlocksToMaturity() > 0)
                 continue;
 
             int nDepth = pcoin->GetDepthInMainChain();
@@ -3991,10 +3986,7 @@ int CMerkleTx::GetDepthInMainChain(const CBlockIndex*& pindexRet) const
 
 int CMerkleTx::GetBlocksToMaturity() const
 {
-    // Both coinbase and coinstake outputs need to mature before spending
-    // This prevents double-spend attacks where the spent UTXO might still
-    // appear available before the wallet fully updates
-    if (!IsCoinBase() && !tx->IsCoinStake())
+    if (!IsCoinBase())
         return 0;
     return std::max(0, (COINBASE_MATURITY + 1) - GetDepthInMainChain());
 }

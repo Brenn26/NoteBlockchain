@@ -160,19 +160,6 @@ public:
         return (nValue == -1);
     }
 
-    // PoS: Check if output is empty (kernel marker)
-    bool IsEmpty() const
-    {
-        return (nValue == 0 && scriptPubKey.empty());
-    }
-
-    // PoS: Set output to empty (for kernel marker)
-    void SetEmpty()
-    {
-        nValue = 0;
-        scriptPubKey.clear();
-    }
-
     friend bool operator==(const CTxOut& a, const CTxOut& b)
     {
         return (a.nValue       == b.nValue &&
@@ -348,14 +335,6 @@ public:
         return (vin.size() == 1 && vin[0].prevout.IsNull());
     }
 
-    // PoS: Check if transaction is a coinstake (PoS equivalent of coinbase)
-    // Coinstake: first input is masternode collateral, first output is empty kernel
-    bool IsCoinStake() const
-    {
-        return (vin.size() > 0 && !vin[0].prevout.IsNull() &&
-                vout.size() >= 2 && vout[0].IsEmpty());
-    }
-
     friend bool operator==(const CTransaction& a, const CTransaction& b)
     {
         return a.hash == b.hash;
@@ -424,13 +403,6 @@ struct CMutableTransaction
             }
         }
         return false;
-    }
-
-    // PoS: Check if transaction is a coinstake
-    bool IsCoinStake() const
-    {
-        return (vin.size() > 0 && !vin[0].prevout.IsNull() &&
-                vout.size() >= 2 && vout[0].IsEmpty());
     }
 };
 

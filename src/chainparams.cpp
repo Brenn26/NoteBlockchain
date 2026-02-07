@@ -123,23 +123,6 @@ public:
         consensus.nLocalTargetAdjustment = 4; //target adjustment per algo
         /* End DigiShield params */
         consensus.nDigiSheildHFHeight = 1385480; //Digishield kicks in at this block for Mainnet
-        /* Start masternode params*/
-        consensus.nMasternodeCollateral = 200000 * COIN;  // 200,000 coins
-        consensus.nMasternodePaymentPercent = 100;        // 100% of PoS block reward (reserved for future use)
-        consensus.nMasternodeActivationHeight = 4762759;  // Activate at block 4,762,759
-        consensus.nMasternodeMinimumConfirmations = 100;
-        /*End masternode params*/
-
-        /* Start Proof of Stake params - Competing PoW/PoS Hybrid */
-        consensus.fAllowPoSBlocks = true;                 // Enable PoS competition
-        consensus.nStakeMinAge = 1 * 60 * 60;             // 1 hour minimum stake age
-        consensus.nStakeMaxAge = 0;                       // No maximum age
-        consensus.nPoSTargetWeight = 100;                 // PoS weight: 100 = 10x multiplier (1000/100)
-                                                          // Makes PoS significantly easier to compete with PoW
-                                                          // Target: ~60% PoW / ~40% PoS in practice
-        // Block reward: Uses GetBlockSubsidy() - 4756 coins initially, decays 80% per year
-        /* End PoS params */
-
 
         /**
          * The message start string is designed to be unlikely to occur in normal data.
@@ -268,18 +251,6 @@ public:
         /* End DigiShield params */
         consensus.nDigiSheildHFHeight = 600; //Digishield kicks in at this block for Testnet
 
-        /* Start masternode params - Testnet */
-        consensus.nMasternodeCollateral = 10000 * COIN;   // 10,000 coins (lower for testing)
-        consensus.nMasternodePaymentPercent = 50;
-        consensus.nMasternodeActivationHeight = 100;      // Activate earlier for testing
-        consensus.nMasternodeMinimumConfirmations = 10;   // Faster for testing
-        /* Start PoS params - Testnet */
-        consensus.fAllowPoSBlocks = true;
-        consensus.nStakeMinAge = 10 * 60;                 // 10 minutes for testing
-        consensus.nStakeMaxAge = 0;
-        consensus.nPoSTargetWeight = 100;                 // PoS weight: 100 = 10x multiplier
-                                                          // Target: ~60% PoW / ~40% PoS
-        /* End params */
 
         pchMessageStart[0] = 0xda;
         pchMessageStart[1] = 0xe7;
@@ -372,19 +343,6 @@ public:
         consensus.nLocalTargetAdjustment = 4; //target adjustment per algo
         /* End DigiShield params */
         consensus.nDigiSheildHFHeight = 600; //Digishield kicks in at this block for Regtest
-
-        /* Start masternode params - Regtest */
-        consensus.nMasternodeCollateral = 1000 * COIN;    // 1,000 coins (very low for testing)
-        consensus.nMasternodePaymentPercent = 50;
-        consensus.nMasternodeActivationHeight = 10;       // Very early activation
-        consensus.nMasternodeMinimumConfirmations = 2;    // Minimal confirmations
-        /* Start PoS params - Regtest */
-        consensus.fAllowPoSBlocks = true;
-        consensus.nStakeMinAge = 60;                      // 1 minute for testing
-        consensus.nStakeMaxAge = 0;
-        consensus.nPoSTargetWeight = 100;                 // PoS weight: 100 = 10x multiplier
-                                                          // Target: ~60% PoW / ~40% PoS
-        /* End params */
 
         pchMessageStart[0] = 0xad;
         pchMessageStart[1] = 0xe2;

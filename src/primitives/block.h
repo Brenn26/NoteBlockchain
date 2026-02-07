@@ -118,19 +118,6 @@ public:
         return block;
     }
 
-    // PoS: Check if block is Proof-of-Stake
-    // PoS blocks have coinstake as second transaction
-    bool IsProofOfStake() const
-    {
-        return (vtx.size() > 1 && vtx[1]->IsCoinStake());
-    }
-
-    // Check if block is Proof-of-Work (traditional mining)
-    bool IsProofOfWork() const
-    {
-        return !IsProofOfStake();
-    }
-
     std::string ToString() const;
 };
 
