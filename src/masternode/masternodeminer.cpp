@@ -179,27 +179,28 @@ bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
 
             if (CheckStakeKernelHash(nBits, pindexFrom, txPrev, prevout,
                                    nTryTime, hashProofOfStake, params)) {
-                // Found valid stake! Build the proof transaction.
-                // The collateral is NOT spent — the input reference + signature
-                // proves ownership of the locked collateral UTXO.
+                // Found valid stake! Build the coinstake transaction.
+                // The collateral is spent and returned in a new output (normal UTXO flow).
                 CMutableTransaction txNewMut;
                 nTxNewTime = nTryTime;
 
-                // Input: reference the collateral outpoint (proves ownership, NOT spent)
+                // Input: spend the collateral outpoint
                 txNewMut.vin.resize(1);
                 txNewMut.vin[0].prevout = prevout;
-                // Encode block height in nSequence to ensure unique txid per block
-                txNewMut.vin[0].nSequence = (uint32_t)(pindexPrev->nHeight + 1);
 
                 // Calculate block reward
                 CAmount nReward = GetBlockSubsidy(pindexPrev->nHeight + 1, params);
+                CAmount nCollateral = wtx->tx->vout[coin.i].nValue;
 
-                // Output 0: empty marker (keeps IsCoinStake() = true for block identification)
-                // Output 1: full block reward to the masternode operator's address
-                txNewMut.vout.resize(2);
+                // Output 0: empty marker (keeps IsCoinStake() = true)
+                // Output 1: collateral returned to same address
+                // Output 2: block reward to the masternode operator
+                txNewMut.vout.resize(3);
                 txNewMut.vout[0].SetEmpty();
-                txNewMut.vout[1].nValue = nReward;
+                txNewMut.vout[1].nValue = nCollateral;
                 txNewMut.vout[1].scriptPubKey = wtx->tx->vout[coin.i].scriptPubKey;
+                txNewMut.vout[2].nValue = nReward;
+                txNewMut.vout[2].scriptPubKey = wtx->tx->vout[coin.i].scriptPubKey;
 
                 // Sign the input to prove we own the collateral's private key
                 const CKeyStore& keystore = *pwallet;
@@ -356,7 +357,32 @@ void ThreadStakeMinter(CWallet* pwallet)
                     if (fNewBlock) {
                         LogPrintf("ThreadStakeMinter: Masternode block accepted! Height=%d Hash=%s\n",
                                  chainActive.Height(), block.GetHash().ToString());
-                        LogPrintf("ThreadStakeMinter: Collateral remains locked, reward in proof tx output\n");
+
+                        // The coinstake spent the old collateral and created a new one in vout[1].
+                        // We need to: unlock old outpoint, lock new outpoint, update MN registration.
+                        const CTransaction& coinstake = *block.vtx[1];
+                        COutPoint oldOutpoint = coinstake.vin[0].prevout;
+                        COutPoint newOutpoint(coinstake.GetHash(), 1); // vout[1] = returned collateral
+
+                        LOCK(pwallet->cs_wallet);
+
+                        // Unlock the old (now spent) collateral
+                        pwallet->UnlockCoin(oldOutpoint);
+
+                        // Lock the new collateral outpoint
+                        pwallet->LockCoin(newOutpoint);
+
+                        // Update masternode registration to point to new collateral
+                        CMasternode* pmn = mnodeman.Find(oldOutpoint);
+                        if (pmn) {
+                            COutPoint savedOutpoint = pmn->outpoint;
+                            pmn->outpoint = newOutpoint;
+                            // Re-index in masternode manager
+                            mnodeman.Remove(savedOutpoint);
+                            mnodeman.Add(*pmn);
+                            LogPrintf("ThreadStakeMinter: Updated masternode collateral %s -> %s\n",
+                                     oldOutpoint.ToString(), newOutpoint.ToString());
+                        }
                     }
                 }
             }

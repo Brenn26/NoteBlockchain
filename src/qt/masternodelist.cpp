@@ -112,14 +112,14 @@ void MasternodeList::updateMyNodeList()
                 ui->myExpectedReward->setText(QString::fromStdString(FormatMoney(blockReward)));
 
                 // Calculate total rewards earned from masternode blocks
-                // Proof tx structure: vout[0]=empty marker, vout[1]=reward
+                // Coinstake structure: vout[0]=empty, vout[1]=collateral return, vout[2]=reward
                 totalRewards = 0;
                 int blocksProduced = 0;
                 for (const auto& entry : pwallet->mapWallet) {
                     const CWalletTx& rewardWtx = entry.second;
                     if (rewardWtx.tx->IsCoinStake() && rewardWtx.GetDepthInMainChain() > 0) {
-                        if (rewardWtx.tx->vout.size() >= 2 && pwallet->IsMine(rewardWtx.tx->vout[1])) {
-                            CAmount nReward = rewardWtx.tx->vout[1].nValue;
+                        if (rewardWtx.tx->vout.size() >= 3 && pwallet->IsMine(rewardWtx.tx->vout[2])) {
+                            CAmount nReward = rewardWtx.tx->vout[2].nValue;
                             if (nReward > 0) {
                                 totalRewards += nReward;
                                 blocksProduced++;

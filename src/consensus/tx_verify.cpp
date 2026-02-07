@@ -228,7 +228,9 @@ bool Consensus::CheckTxInputs(const CTransaction& tx, CValidationState& state, c
 
         // If prev is coinstake, check that it's matured
         // Coinstake outputs must mature for 100 blocks before spending (same as coinbase)
-        if (coin.IsCoinStake() && nSpendHeight - coin.nHeight < COINBASE_MATURITY) {
+        // Exception: a coinstake transaction can spend its own previous coinstake output
+        // (the returned collateral) to allow continuous masternode staking
+        if (coin.IsCoinStake() && !tx.IsCoinStake() && nSpendHeight - coin.nHeight < COINBASE_MATURITY) {
             return state.Invalid(false,
                 REJECT_INVALID, "bad-txns-premature-spend-of-coinstake",
                 strprintf("tried to spend coinstake at depth %d", nSpendHeight - coin.nHeight));
