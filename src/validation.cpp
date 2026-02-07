@@ -1595,9 +1595,10 @@ DisconnectResult CChainState::DisconnectBlock(const CBlock& block, const CBlockI
         bool is_coinstake = tx.IsCoinStake();
 
         // Check that all outputs are available and match the outputs in the block itself
-        // exactly.
+        // exactly. Skip empty marker outputs (PoS kernel markers) since they are not
+        // stored in the UTXO set.
         for (size_t o = 0; o < tx.vout.size(); o++) {
-            if (!tx.vout[o].scriptPubKey.IsUnspendable()) {
+            if (!tx.vout[o].scriptPubKey.IsUnspendable() && !tx.vout[o].IsEmpty()) {
                 COutPoint out(hash, o);
                 Coin coin;
                 bool is_spent = view.SpendCoin(out, &coin);
@@ -1895,6 +1896,9 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
     if (fEnforceBIP30) {
         for (const auto& tx : block.vtx) {
             for (size_t o = 0; o < tx->vout.size(); o++) {
+                // Skip empty marker outputs (PoS kernel markers) — not stored in UTXO set
+                if (tx->vout[o].IsEmpty())
+                    continue;
                 if (view.HaveCoin(COutPoint(tx->GetHash(), o))) {
                     return state.DoS(100, error("ConnectBlock(): tried to overwrite transaction"),
                                      REJECT_INVALID, "bad-txns-BIP30");
@@ -2004,6 +2008,15 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
     // Masternode block: Verify coinstake structure and reward
     // The coinstake spends the collateral and returns it, plus the block reward
     if (block.IsProofOfStake()) {
+        LogPrintf("ConnectBlock(): PoS block at height %d, nFees=%s, subsidy=%s, blockReward=%s, "
+                 "coinstake vout_count=%d, vout[1]=%s, vout[2]=%s\n",
+                 pindex->nHeight, FormatMoney(nFees),
+                 FormatMoney(GetBlockSubsidy(pindex->nHeight, chainparams.GetConsensus())),
+                 FormatMoney(blockReward),
+                 (int)block.vtx[1]->vout.size(),
+                 FormatMoney(block.vtx[1]->vout.size() > 1 ? block.vtx[1]->vout[1].nValue : 0),
+                 FormatMoney(block.vtx[1]->vout.size() > 2 ? block.vtx[1]->vout[2].nValue : 0));
+
         // Verify coinstake structure: must have exactly 3 outputs
         // Output 0: empty (kernel marker), Output 1: collateral returned, Output 2: block reward
         if (block.vtx[1]->vout.size() != 3)

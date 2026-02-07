@@ -89,6 +89,10 @@ void AddCoins(CCoinsViewCache& cache, const CTransaction &tx, int nHeight, bool 
     bool fCoinstake = tx.IsCoinStake();
     const uint256& txid = tx.GetHash();
     for (size_t i = 0; i < tx.vout.size(); ++i) {
+        // Skip empty marker outputs (PoS kernel markers in coinbase/coinstake vout[0])
+        // These have nValue=0 and empty scriptPubKey, and should not be stored in the UTXO set
+        if (tx.vout[i].IsEmpty())
+            continue;
         bool overwrite = check ? cache.HaveCoin(COutPoint(txid, i)) : fCoinbase;
         // Always set the possible_overwrite flag to AddCoin for coinbase txn, in order to correctly
         // deal with the pre-BIP30 occurrences of duplicate coinbase transactions.

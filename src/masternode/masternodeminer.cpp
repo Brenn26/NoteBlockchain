@@ -192,6 +192,10 @@ bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
                 CAmount nReward = GetBlockSubsidy(pindexPrev->nHeight + 1, params);
                 CAmount nCollateral = wtx->tx->vout[coin.i].nValue;
 
+                LogPrintf("CMasternodeMiner::CreateCoinStake: height=%d collateral=%s reward=%s total_out=%s\n",
+                         pindexPrev->nHeight + 1, FormatMoney(nCollateral), FormatMoney(nReward),
+                         FormatMoney(nCollateral + nReward));
+
                 // Output 0: empty marker (keeps IsCoinStake() = true)
                 // Output 1: collateral returned to same address
                 // Output 2: block reward to the masternode operator
@@ -355,8 +359,14 @@ void ThreadStakeMinter(CWallet* pwallet)
 
                 if (ProcessNewBlock(Params(), shared_pblock, true, &fNewBlock)) {
                     if (fNewBlock) {
-                        LogPrintf("ThreadStakeMinter: Masternode block accepted! Height=%d Hash=%s\n",
-                                 chainActive.Height(), block.GetHash().ToString());
+                        const CTransaction& cs = *block.vtx[1];
+                        LogPrintf("ThreadStakeMinter: Masternode block accepted! Height=%d Hash=%s "
+                                 "coinstake_txid=%s vout_count=%d vout[1]=%s vout[2]=%s\n",
+                                 chainActive.Height(), block.GetHash().ToString(),
+                                 cs.GetHash().ToString().substr(0,10),
+                                 (int)cs.vout.size(),
+                                 FormatMoney(cs.vout.size() > 1 ? cs.vout[1].nValue : 0),
+                                 FormatMoney(cs.vout.size() > 2 ? cs.vout[2].nValue : 0));
 
                         // The coinstake spent the old collateral and created a new one in vout[1].
                         // We need to: unlock old outpoint, lock new outpoint, update MN registration.

@@ -24,33 +24,48 @@ unsigned int DigiShieldV4(const CBlockIndex* pindexLast, const CBlockHeader *pbl
 {
     const arith_uint256 powLimit = UintToArith256(params.powLimit);
 
+    // Skip PoS blocks — PoW difficulty must only consider PoW blocks
+    // Walk back to find the last PoW block
+    const CBlockIndex* pindexLastPoW = pindexLast;
+    while (pindexLastPoW && pindexLastPoW->IsProofOfStake())
+        pindexLastPoW = pindexLastPoW->pprev;
+
+    if (!pindexLastPoW)
+        return powLimit.GetCompact();
+
     // Special difficulty rule for testnet:
     // If the new block's timestamp is more than 2* target spacing
     // then allow mining of a min-difficulty block.
     if (params.fPowAllowMinDifficultyBlocks)
     {
-        if (pblock->GetBlockTime() > pindexLast->GetBlockTime() + params.nPowTargetSpacing * 2)
+        if (pblock->GetBlockTime() > pindexLastPoW->GetBlockTime() + params.nPowTargetSpacing * 2)
             return powLimit.GetCompact();
     }
 
     // find first block in averaging interval
-    // Go back by what we want to be nAveragingInterval blocks per algo
-    const CBlockIndex* pindexFirst = pindexLast;
+    // Go back by what we want to be nAveragingInterval PoW blocks (skip PoS blocks)
+    const CBlockIndex* pindexFirst = pindexLastPoW;
     for (int i = 0; pindexFirst && i < params.nAveragingInterval; i++)
     {
         pindexFirst = pindexFirst->pprev;
+        // Skip PoS blocks in the averaging interval
+        while (pindexFirst && pindexFirst->IsProofOfStake())
+            pindexFirst = pindexFirst->pprev;
     }
 
-    const CBlockIndex* pindexPrev = pindexLast->pprev;
-    if (pindexPrev == nullptr || pindexFirst == nullptr)
+    // Find the previous PoW block before pindexLastPoW for base difficulty
+    const CBlockIndex* pindexPrevPoW = pindexLastPoW->pprev;
+    while (pindexPrevPoW && pindexPrevPoW->IsProofOfStake())
+        pindexPrevPoW = pindexPrevPoW->pprev;
+
+    if (pindexPrevPoW == nullptr || pindexFirst == nullptr)
     {
-        //return UintToArith256(params.powLimit).GetCompact();
         return powLimit.GetCompact();
     }
 
     // Limit adjustment step
     // Use medians to prevent time-warp attacks
-    int64_t nActualTimespan = pindexLast->GetMedianTimePast() - pindexFirst->GetMedianTimePast();
+    int64_t nActualTimespan = pindexLastPoW->GetMedianTimePast() - pindexFirst->GetMedianTimePast();
     nActualTimespan = params.nAveragingTargetTimespanV4 + (nActualTimespan - params.nAveragingTargetTimespanV4);//Removed / 4 as note doesnt have 4 algos
 
     if (nActualTimespan < params.nMinActualTimespanV4)
@@ -58,9 +73,9 @@ unsigned int DigiShieldV4(const CBlockIndex* pindexLast, const CBlockHeader *pbl
     if (nActualTimespan > params.nMaxActualTimespanV4)
         nActualTimespan = params.nMaxActualTimespanV4;
 
-    //Global retarget
+    //Global retarget — use last PoW block's difficulty as base
     arith_uint256 bnNew;
-    bnNew.SetCompact(pindexPrev->nBits);
+    bnNew.SetCompact(pindexPrevPoW->nBits);
 
     bnNew *= nActualTimespan;
     bnNew /= params.nAveragingTargetTimespanV4;
@@ -85,6 +100,14 @@ unsigned int GetNextWorkRequiredLegacy(const CBlockIndex* pindexLast, const CBlo
     assert(pindexLast != nullptr);
     unsigned int nProofOfWorkLimit = UintToArith256(params.powLimit).GetCompact();
 
+    // Skip PoS blocks — PoW difficulty must only consider PoW blocks
+    const CBlockIndex* pindexLastPoW = pindexLast;
+    while (pindexLastPoW && pindexLastPoW->IsProofOfStake())
+        pindexLastPoW = pindexLastPoW->pprev;
+
+    if (!pindexLastPoW)
+        return nProofOfWorkLimit;
+
     // Only change once per difficulty adjustment interval
     if ((pindexLast->nHeight+1) % params.DifficultyAdjustmentInterval() != 0)
     {
@@ -93,18 +116,22 @@ unsigned int GetNextWorkRequiredLegacy(const CBlockIndex* pindexLast, const CBlo
             // Special difficulty rule for testnet:
             // If the new block's timestamp is more than 2* 10 minutes
             // then allow mining of a min-difficulty block.
-            if (pblock->GetBlockTime() > pindexLast->GetBlockTime() + params.nPowTargetSpacing*2)
+            if (pblock->GetBlockTime() > pindexLastPoW->GetBlockTime() + params.nPowTargetSpacing*2)
                 return nProofOfWorkLimit;
             else
             {
-                // Return the last non-special-min-difficulty-rules-block
-                const CBlockIndex* pindex = pindexLast;
-                while (pindex->pprev && pindex->nHeight % params.DifficultyAdjustmentInterval() != 0 && pindex->nBits == nProofOfWorkLimit)
+                // Return the last non-special-min-difficulty-rules-block (skip PoS blocks)
+                const CBlockIndex* pindex = pindexLastPoW;
+                while (pindex->pprev && pindex->nHeight % params.DifficultyAdjustmentInterval() != 0 && pindex->nBits == nProofOfWorkLimit) {
                     pindex = pindex->pprev;
+                    while (pindex && pindex->IsProofOfStake())
+                        pindex = pindex->pprev;
+                    if (!pindex) return nProofOfWorkLimit;
+                }
                 return pindex->nBits;
             }
         }
-        return pindexLast->nBits;
+        return pindexLastPoW->nBits;
     }
 
     // Go back by what we want to be 14 days worth of blocks
@@ -114,14 +141,18 @@ unsigned int GetNextWorkRequiredLegacy(const CBlockIndex* pindexLast, const CBlo
     if ((pindexLast->nHeight+1) != params.DifficultyAdjustmentInterval())
         blockstogoback = params.DifficultyAdjustmentInterval();
 
-    // Go back by what we want to be 14 days worth of blocks
-    const CBlockIndex* pindexFirst = pindexLast;
-    for (int i = 0; pindexFirst && i < blockstogoback; i++)
+    // Go back by what we want to be 14 days worth of PoW blocks (skip PoS blocks)
+    const CBlockIndex* pindexFirst = pindexLastPoW;
+    for (int i = 0; pindexFirst && i < blockstogoback; i++) {
         pindexFirst = pindexFirst->pprev;
+        while (pindexFirst && pindexFirst->IsProofOfStake())
+            pindexFirst = pindexFirst->pprev;
+    }
 
-    assert(pindexFirst);
+    if (!pindexFirst)
+        return nProofOfWorkLimit;
 
-    return CalculateNextWorkRequired(pindexLast, pindexFirst->GetBlockTime(), params);
+    return CalculateNextWorkRequired(pindexLastPoW, pindexFirst->GetBlockTime(), params);
 }
 
 unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nFirstBlockTime, const Consensus::Params& params)
