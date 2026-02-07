@@ -57,7 +57,7 @@
       <item row="2" column="0">
        <widget class="QLabel" name="label_3">
         <property name="text">
-         <string>Expected Reward:</string>
+         <string>Reward Per Block:</string>
         </property>
        </widget>
       </item>
@@ -72,28 +72,69 @@
        </widget>
       </item>
       <item row="3" column="0">
-       <widget class="QLabel" name="label_4">
+       <widget class="QLabel" name="label_7">
         <property name="text">
-         <string>Total PoS Rewards:</string>
+         <string>Blocks Produced:</string>
         </property>
        </widget>
       </item>
       <item row="3" column="1">
-       <widget class="QLabel" name="myTotalRewards">
+       <widget class="QLabel" name="myBlocksProduced">
         <property name="text">
-         <string>0.00 NOTE (0 blocks)</string>
+         <string>0</string>
         </property>
         <property name="textInteractionFlags">
          <set>Qt::TextSelectableByMouse</set>
         </property>
        </widget>
       </item>
-      <item row="4" column="0" colspan="2">
+      <item row="4" column="0">
+       <widget class="QLabel" name="label_4">
+        <property name="text">
+         <string>Total Rewards Earned:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="1">
+       <widget class="QLabel" name="myTotalRewards">
+        <property name="text">
+         <string>0.00 NOTE</string>
+        </property>
+        <property name="textInteractionFlags">
+         <set>Qt::TextSelectableByMouse</set>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="0">
+       <widget class="QLabel" name="label_8">
+        <property name="text">
+         <string>Est. Time to Next Reward:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="1">
+       <widget class="QLabel" name="myEstimatedTime">
+        <property name="text">
+         <string>N/A</string>
+        </property>
+        <property name="textInteractionFlags">
+         <set>Qt::TextSelectableByMouse</set>
+        </property>
+       </widget>
+      </item>
+      <item row="6" column="0" colspan="2">
        <layout class="QHBoxLayout" name="horizontalLayout">
         <item>
          <widget class="QPushButton" name="startButton">
           <property name="text">
            <string>Start Masternode</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="stopButton">
+          <property name="text">
+           <string>Stop Masternode</string>
           </property>
          </widget>
         </item>

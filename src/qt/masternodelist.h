@@ -45,6 +45,7 @@ Q_SIGNALS:
 
 private Q_SLOTS:
     void on_startButton_clicked();
+    void on_stopButton_clicked();
 };
 
 #endif // BITCOIN_QT_MASTERNODELIST_H

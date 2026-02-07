@@ -27,7 +27,7 @@ UniValue masternode(const JSONRPCRequest& request)
 
     if (request.fHelp ||
         (strCommand != "count" && strCommand != "list" &&
-         strCommand != "status" && strCommand != "start" && strCommand != "help"))
+         strCommand != "status" && strCommand != "start" && strCommand != "stop" && strCommand != "help"))
         throw std::runtime_error(
             "masternode \"command\"...\n"
             "Set of commands to execute masternode related actions\n"
@@ -37,11 +37,13 @@ UniValue masternode(const JSONRPCRequest& request)
             "  count        - Get network total and user's masternode count\n"
             "  list         - List all masternodes on the network\n"
             "  status       - Get masternode status (network and user's)\n"
-            "  start        - Start your masternode\n"
+            "  start        - Start your masternode (locks collateral)\n"
+            "  stop         - Stop your masternode (unlocks collateral)\n"
             "  help         - Show detailed setup instructions\n"
             "\nExamples:\n"
             + HelpExampleCli("masternode", "count")
             + HelpExampleCli("masternode", "start")
+            + HelpExampleCli("masternode", "stop")
             + HelpExampleCli("masternode", "help")
             + HelpExampleRpc("masternode", "\"status\"")
         );
@@ -126,6 +128,42 @@ UniValue masternode(const JSONRPCRequest& request)
         obj.pushKV("pos_activated", chainActive.Height() >= params.nMasternodeActivationHeight);
         obj.pushKV("collateral_required", ValueFromAmount(params.nMasternodeCollateral));
 
+        // Reward tracking for this wallet's masternodes
+        CAmount nTotalRewards = 0;
+        int nBlocksProduced = 0;
+        for (const auto& pair : pwallet->mapWallet) {
+            const CWalletTx& wtx = pair.second;
+            if (wtx.tx->IsCoinStake() && wtx.GetDepthInMainChain() > 0) {
+                if (wtx.tx->vout.size() >= 2 && pwallet->IsMine(wtx.tx->vout[1])) {
+                    CAmount nReward = wtx.tx->vout[1].nValue;
+                    if (nReward > 0) {
+                        nTotalRewards += nReward;
+                        nBlocksProduced++;
+                    }
+                }
+            }
+        }
+        obj.pushKV("blocks_produced", nBlocksProduced);
+        obj.pushKV("total_rewards", ValueFromAmount(nTotalRewards));
+        obj.pushKV("total_rewards_formatted", FormatMoney(nTotalRewards) + " NOTE");
+
+        // Estimated time until next reward
+        int64_t nExpectedTime = masternodeMiner.GetExpectedStakeTime(Params(), pwallet);
+        if (nExpectedTime > 0) {
+            obj.pushKV("estimated_time_to_next_reward_seconds", nExpectedTime);
+            // Human-readable format
+            int hours = nExpectedTime / 3600;
+            int minutes = (nExpectedTime % 3600) / 60;
+            int seconds = nExpectedTime % 60;
+            std::string timeStr;
+            if (hours > 0) timeStr += std::to_string(hours) + "h ";
+            if (minutes > 0) timeStr += std::to_string(minutes) + "m ";
+            timeStr += std::to_string(seconds) + "s";
+            obj.pushKV("estimated_time_to_next_reward", timeStr);
+        } else {
+            obj.pushKV("estimated_time_to_next_reward", "N/A (masternode not staking)");
+        }
+
         return obj;
     }
 
@@ -208,6 +246,10 @@ UniValue masternode(const JSONRPCRequest& request)
                 }
 
                 if (mnodeman.Add(mn)) {
+                    // Lock the collateral UTXO to prevent accidental spending
+                    // The collateral remains in the UTXO set — it is never spent
+                    pwallet->LockCoin(outpoint);
+
                     // Enable staking now that masternode is registered
                     masternodeMiner.EnableStaking();
 
@@ -221,7 +263,7 @@ UniValue masternode(const JSONRPCRequest& request)
 
                     UniValue obj(UniValue::VOBJ);
                     obj.pushKV("status", "success");
-                    obj.pushKV("message", "Masternode started and staking enabled");
+                    obj.pushKV("message", "Masternode started, collateral locked");
                     obj.pushKV("address", addr.ToString());
                     obj.pushKV("collateral", outpoint.ToString());
                     return obj;
@@ -235,6 +277,51 @@ UniValue masternode(const JSONRPCRequest& request)
             "No masternode collateral (" + FormatMoney(params.nMasternodeCollateral) + ") found in wallet");
     }
 
+    if (strCommand == "stop") {
+        CWallet * const pwallet = GetWalletForJSONRPCRequest(request);
+        if (!EnsureWalletIsAvailable(pwallet, request.fHelp))
+            return NullUniValue;
+
+        LOCK2(cs_main, pwallet->cs_wallet);
+
+        // Find our masternode by IP
+        std::string externalIP = gArgs.GetArg("-externalip", "");
+        if (externalIP.empty())
+            throw JSONRPCError(RPC_MISC_ERROR, "No external IP configured");
+
+        CService addr;
+        if (!Lookup(externalIP.c_str(), addr, Params().GetDefaultPort(), false))
+            throw JSONRPCError(RPC_MISC_ERROR, "Failed to lookup external IP address");
+
+        CMasternode* pmn = mnodeman.FindByIP(addr);
+        if (!pmn)
+            throw JSONRPCError(RPC_MISC_ERROR, "No active masternode found for IP " + addr.ToString());
+
+        // Verify we own this masternode's collateral
+        const CWalletTx* wtx = pwallet->GetWalletTx(pmn->outpoint.hash);
+        if (!wtx || pmn->outpoint.n >= wtx->tx->vout.size() ||
+            !pwallet->IsMine(wtx->tx->vout[pmn->outpoint.n])) {
+            throw JSONRPCError(RPC_MISC_ERROR, "Masternode collateral not owned by this wallet");
+        }
+
+        COutPoint removedOutpoint = pmn->outpoint;
+
+        // Unlock the collateral UTXO so it can be spent again
+        pwallet->UnlockCoin(removedOutpoint);
+
+        // Remove from masternode list
+        mnodeman.Remove(removedOutpoint);
+
+        // Disable staking
+        masternodeMiner.DisableStaking();
+
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("status", "success");
+        obj.pushKV("message", "Masternode stopped, collateral unlocked");
+        obj.pushKV("collateral", removedOutpoint.ToString());
+        return obj;
+    }
+
     if (strCommand == "help") {
         const Consensus::Params& params = Params().GetConsensus();
 
@@ -243,18 +330,25 @@ UniValue masternode(const JSONRPCRequest& request)
             "  MASTERNODE SETUP GUIDE\n"
             "===========================================\n\n"
 
+            "OVERVIEW:\n"
+            "---------\n"
+            "Masternodes lock collateral and produce blocks that compete with\n"
+            "PoW miners. The collateral is NEVER spent - it stays locked in\n"
+            "your wallet as proof of commitment. Whoever finds a block (miner\n"
+            "or masternode) receives the full block reward.\n\n"
+
             "REQUIREMENTS:\n"
             "-------------\n"
-            "1. Collateral: " + FormatMoney(params.nMasternodeCollateral) + " coins (exact amount)\n"
+            "1. Collateral: " + FormatMoney(params.nMasternodeCollateral) + " coins (exact amount in single UTXO)\n"
             "2. Public IP address (unique per masternode)\n"
-            "3. Minimum " + std::to_string(params.nMasternodeMinimumConfirmations) + " confirmations\n"
-            "4. Stake age: " + std::to_string(params.nStakeMinAge / 3600) + " hour(s)\n\n"
+            "3. Minimum " + std::to_string(params.nMasternodeMinimumConfirmations) + " confirmations on collateral\n"
+            "4. Minimum coin age: " + std::to_string(params.nStakeMinAge / 3600) + " hour(s)\n\n"
 
             "SETUP STEPS:\n"
             "------------\n"
             "1. Send exactly " + FormatMoney(params.nMasternodeCollateral) + " coins to your wallet\n\n"
 
-            "2. Configure your notecoin.conf file:\n\n"
+            "2. Configure your noteblockchain.conf file:\n\n"
             "   # Set your public IP address\n"
             "   # Find your IP at: https://whatismyipaddress.com\n"
             "   externalip=YOUR.PUBLIC.IP.HERE\n\n"
@@ -269,20 +363,23 @@ UniValue masternode(const JSONRPCRequest& request)
             "4. Wait for " + std::to_string(params.nMasternodeMinimumConfirmations) + " confirmations (~" +
                 std::to_string(params.nMasternodeMinimumConfirmations * 30 / 60) + " minutes)\n\n"
 
-            "5. Start your masternode (this also enables staking):\n"
+            "5. Start your masternode (locks collateral and begins block production):\n"
             "   notecoin-cli masternode start\n\n"
 
             "6. Check status:\n"
             "   notecoin-cli masternode status\n"
             "   notecoin-cli getstakingstatus\n\n"
 
+            "7. To stop your masternode and unlock collateral:\n"
+            "   notecoin-cli masternode stop\n\n"
+
             "IMPORTANT NOTES:\n"
             "----------------\n"
             "* ONE masternode per PUBLIC IP address\n"
             "* Private IPs (192.168.x.x, 10.x.x.x) are NOT allowed\n"
-            "* For multiple masternodes, use different VPS/servers\n"
-            "* Do NOT spend your " + FormatMoney(params.nMasternodeCollateral) + " collateral or staking stops\n"
-            "* Coins automatically stake when eligible - no manual action needed\n\n"
+            "* Collateral is LOCKED, not spent - it remains in your wallet\n"
+            "* If collateral is spent (e.g. via raw transaction), masternode is removed\n"
+            "* Use 'masternode stop' to unlock collateral before spending\n\n"
 
             "MULTIPLE MASTERNODES:\n"
             "---------------------\n"
@@ -294,7 +391,7 @@ UniValue masternode(const JSONRPCRequest& request)
 
             "TROUBLESHOOTING:\n"
             "----------------\n"
-            "If staking not working:\n"
+            "If masternode not producing blocks:\n"
             "* Check: notecoin-cli getstakingstatus\n"
             "* Verify external IP configured correctly\n"
             "* Ensure " + std::to_string(params.nMasternodeMinimumConfirmations) + "+ confirmations\n"
@@ -317,13 +414,16 @@ UniValue getstakingstatus(const JSONRPCRequest& request)
     if (request.fHelp || request.params.size() != 0)
         throw std::runtime_error(
             "getstakingstatus\n"
-            "Returns staking status information.\n"
+            "Returns staking status and reward tracking information.\n"
             "\nResult:\n"
             "{\n"
             "  \"staking\": true|false,           (boolean) whether staking is enabled\n"
-            "  \"expected_time\": n,              (numeric) estimated time until next stake (seconds)\n"
-            "  \"masternode_count\": n,           (numeric) number of registered masternodes\n"
+            "  \"enabled_masternodes\": n,        (numeric) number of enabled masternodes on network\n"
             "  \"block_height\": n,               (numeric) current block height\n"
+            "  \"blocks_produced\": n,            (numeric) number of masternode blocks you produced\n"
+            "  \"total_rewards\": x.xxx,          (numeric) total rewards earned\n"
+            "  \"estimated_time_to_next_reward_seconds\": n, (numeric) estimated seconds until next reward\n"
+            "  \"estimated_time_to_next_reward\": \"str\",   (string) human-readable time estimate\n"
             "}\n"
             "\nExamples:\n"
             + HelpExampleCli("getstakingstatus", "")
@@ -334,14 +434,48 @@ UniValue getstakingstatus(const JSONRPCRequest& request)
     if (!EnsureWalletIsAvailable(pwallet, request.fHelp))
         return NullUniValue;
 
+    LOCK2(cs_main, pwallet->cs_wallet);
+
     UniValue obj(UniValue::VOBJ);
     obj.pushKV("staking", masternodeMiner.CanStake(Params()));
-
-    int64_t nExpectedTime = masternodeMiner.GetExpectedStakeTime(Params(), pwallet);
-    obj.pushKV("expected_time", nExpectedTime);
-    obj.pushKV("masternode_count_network", mnodeman.CountEnabled());  // Only count active masternodes
-    obj.pushKV("masternode_count_enabled", mnodeman.CountEnabled());
+    obj.pushKV("enabled_masternodes", mnodeman.CountEnabled());
     obj.pushKV("block_height", chainActive.Height());
+
+    // Reward tracking
+    CAmount nTotalRewards = 0;
+    int nBlocksProduced = 0;
+    for (const auto& pair : pwallet->mapWallet) {
+        const CWalletTx& wtx = pair.second;
+        if (wtx.tx->IsCoinStake() && wtx.GetDepthInMainChain() > 0) {
+            if (wtx.tx->vout.size() >= 2 && pwallet->IsMine(wtx.tx->vout[1])) {
+                CAmount nReward = wtx.tx->vout[1].nValue;
+                if (nReward > 0) {
+                    nTotalRewards += nReward;
+                    nBlocksProduced++;
+                }
+            }
+        }
+    }
+    obj.pushKV("blocks_produced", nBlocksProduced);
+    obj.pushKV("total_rewards", ValueFromAmount(nTotalRewards));
+    obj.pushKV("total_rewards_formatted", FormatMoney(nTotalRewards) + " NOTE");
+
+    // Estimated time until next reward
+    int64_t nExpectedTime = masternodeMiner.GetExpectedStakeTime(Params(), pwallet);
+    if (nExpectedTime > 0) {
+        obj.pushKV("estimated_time_to_next_reward_seconds", nExpectedTime);
+        int hours = nExpectedTime / 3600;
+        int minutes = (nExpectedTime % 3600) / 60;
+        int seconds = nExpectedTime % 60;
+        std::string timeStr;
+        if (hours > 0) timeStr += std::to_string(hours) + "h ";
+        if (minutes > 0) timeStr += std::to_string(minutes) + "m ";
+        timeStr += std::to_string(seconds) + "s";
+        obj.pushKV("estimated_time_to_next_reward", timeStr);
+    } else {
+        obj.pushKV("estimated_time_to_next_reward_seconds", -1);
+        obj.pushKV("estimated_time_to_next_reward", "N/A (masternode not staking)");
+    }
 
     return obj;
 }
@@ -351,12 +485,16 @@ UniValue getposrewards(const JSONRPCRequest& request)
     if (request.fHelp || request.params.size() != 0)
         throw std::runtime_error(
             "getposrewards\n"
-            "Returns total rewards earned from Proof-of-Stake blocks.\n"
+            "Returns total rewards earned from masternode blocks and estimated time to next reward.\n"
             "\nResult:\n"
             "{\n"
-            "  \"total_pos_rewards\": x.xxx,      (numeric) total rewards from PoS blocks\n"
-            "  \"pos_blocks_mined\": n,           (numeric) number of PoS blocks mined\n"
-            "  \"total_pos_rewards_formatted\": \"x.xxx COIN\", (string) formatted reward amount\n"
+            "  \"total_masternode_rewards\": x.xxx,  (numeric) total rewards from masternode blocks\n"
+            "  \"masternode_blocks\": n,             (numeric) number of masternode blocks produced\n"
+            "  \"total_rewards_formatted\": \"x.xxx NOTE\", (string) formatted reward amount\n"
+            "  \"reward_per_block\": x.xxx,          (numeric) current reward per block\n"
+            "  \"enabled_masternodes\": n,            (numeric) number of enabled masternodes on network\n"
+            "  \"estimated_time_to_next_reward_seconds\": n, (numeric) estimated seconds until next reward\n"
+            "  \"estimated_time_to_next_reward\": \"str\",   (string) human-readable time estimate\n"
             "}\n"
             "\nExamples:\n"
             + HelpExampleCli("getposrewards", "")
@@ -376,39 +514,50 @@ UniValue getposrewards(const JSONRPCRequest& request)
     for (const auto& pair : pwallet->mapWallet) {
         const CWalletTx& wtx = pair.second;
 
-        // Check if this is a coinstake transaction (PoS block)
+        // Check if this is a proof transaction (masternode block)
+        // Proof tx structure: vout[0]=empty marker, vout[1]=reward
+        // Collateral is never spent, so vout[1] is pure reward
         if (wtx.tx->IsCoinStake() && wtx.GetDepthInMainChain() > 0) {
-            // Calculate the reward (output - input)
-            CAmount nInput = 0;
-            CAmount nOutput = 0;
-
-            // Sum inputs
-            for (const auto& txin : wtx.tx->vin) {
-                const CWalletTx* prev = pwallet->GetWalletTx(txin.prevout.hash);
-                if (prev && txin.prevout.n < prev->tx->vout.size()) {
-                    nInput += prev->tx->vout[txin.prevout.n].nValue;
+            if (wtx.tx->vout.size() >= 2 && pwallet->IsMine(wtx.tx->vout[1])) {
+                CAmount nReward = wtx.tx->vout[1].nValue;
+                if (nReward > 0) {
+                    nTotalRewards += nReward;
+                    nPosBlocks++;
                 }
-            }
-
-            // Sum outputs (skip first output which is empty in coinstake)
-            for (size_t i = 1; i < wtx.tx->vout.size(); i++) {
-                if (pwallet->IsMine(wtx.tx->vout[i])) {
-                    nOutput += wtx.tx->vout[i].nValue;
-                }
-            }
-
-            CAmount nReward = nOutput - nInput;
-            if (nReward > 0) {
-                nTotalRewards += nReward;
-                nPosBlocks++;
             }
         }
     }
 
     UniValue obj(UniValue::VOBJ);
-    obj.pushKV("total_pos_rewards", ValueFromAmount(nTotalRewards));
-    obj.pushKV("pos_blocks_mined", nPosBlocks);
-    obj.pushKV("total_pos_rewards_formatted", FormatMoney(nTotalRewards) + " COIN");
+    obj.pushKV("total_masternode_rewards", ValueFromAmount(nTotalRewards));
+    obj.pushKV("masternode_blocks", nPosBlocks);
+    obj.pushKV("total_rewards_formatted", FormatMoney(nTotalRewards) + " NOTE");
+
+    // Current reward per block
+    CAmount blockReward = GetBlockSubsidy(chainActive.Height() + 1, Params().GetConsensus());
+    obj.pushKV("reward_per_block", ValueFromAmount(blockReward));
+    obj.pushKV("reward_per_block_formatted", FormatMoney(blockReward) + " NOTE");
+
+    // Network masternode count
+    int nEnabledMasternodes = mnodeman.CountEnabled();
+    obj.pushKV("enabled_masternodes", nEnabledMasternodes);
+
+    // Estimated time until next reward
+    int64_t nExpectedTime = masternodeMiner.GetExpectedStakeTime(Params(), pwallet);
+    if (nExpectedTime > 0) {
+        obj.pushKV("estimated_time_to_next_reward_seconds", nExpectedTime);
+        int hours = nExpectedTime / 3600;
+        int minutes = (nExpectedTime % 3600) / 60;
+        int seconds = nExpectedTime % 60;
+        std::string timeStr;
+        if (hours > 0) timeStr += std::to_string(hours) + "h ";
+        if (minutes > 0) timeStr += std::to_string(minutes) + "m ";
+        timeStr += std::to_string(seconds) + "s";
+        obj.pushKV("estimated_time_to_next_reward", timeStr);
+    } else {
+        obj.pushKV("estimated_time_to_next_reward_seconds", -1);
+        obj.pushKV("estimated_time_to_next_reward", "N/A (masternode not staking)");
+    }
 
     return obj;
 }

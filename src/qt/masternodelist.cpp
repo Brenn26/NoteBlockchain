@@ -9,6 +9,7 @@
 #include "walletmodel.h"
 #include "masternode/masternode.h"
 #include "masternode/masternodeman.h"
+#include "masternode/masternodeminer.h"
 #include "guiutil.h"
 #include "validation.h"
 #include "wallet/wallet.h"
@@ -73,7 +74,9 @@ void MasternodeList::updateMyNodeList()
     ui->myMasternodeStatus->setText("Not Running");
     ui->myMasternodeAddress->setText("N/A");
     ui->myExpectedReward->setText("0.00 NOTE");
+    ui->myBlocksProduced->setText("0");
     ui->myTotalRewards->setText("0.00 NOTE");
+    ui->myEstimatedTime->setText("N/A");
 
     // Check if we have a masternode running
     bool foundMasternode = false;
@@ -97,44 +100,42 @@ void MasternodeList::updateMyNodeList()
                 ui->myMasternodeStatus->setText(QString::fromStdString(pmn->GetStatus()));
                 ui->myMasternodeAddress->setText(QString::fromStdString(pmn->addr.ToString()));
 
-                // Calculate expected reward per stake (full PoS block reward)
+                // Calculate expected reward per block (full block reward)
                 CAmount blockReward = GetBlockSubsidy(chainActive.Height() + 1, Params().GetConsensus());
-                CAmount masternodeReward = blockReward;  // Masternode gets full reward when staking
-                ui->myExpectedReward->setText(QString::fromStdString(FormatMoney(masternodeReward)));
+                ui->myExpectedReward->setText(QString::fromStdString(FormatMoney(blockReward)));
 
-                // Calculate total rewards earned from PoS blocks
+                // Calculate total rewards earned from masternode blocks
+                // Proof tx structure: vout[0]=empty marker, vout[1]=reward
                 totalRewards = 0;
-                int blocksStaked = 0;
+                int blocksProduced = 0;
                 for (const auto& entry : pwallet->mapWallet) {
                     const CWalletTx& wtx = entry.second;
                     if (wtx.tx->IsCoinStake() && wtx.GetDepthInMainChain() > 0) {
-                        // Calculate actual reward (output - input)
-                        CAmount nInput = 0;
-                        CAmount nOutput = 0;
-
-                        // Sum inputs
-                        for (const auto& txin : wtx.tx->vin) {
-                            const CWalletTx* prev = pwallet->GetWalletTx(txin.prevout.hash);
-                            if (prev && txin.prevout.n < prev->tx->vout.size()) {
-                                nInput += prev->tx->vout[txin.prevout.n].nValue;
+                        // Reward is in vout[1] (collateral is never spent, so vout[1] is pure reward)
+                        if (wtx.tx->vout.size() >= 2 && pwallet->IsMine(wtx.tx->vout[1])) {
+                            CAmount nReward = wtx.tx->vout[1].nValue;
+                            if (nReward > 0) {
+                                totalRewards += nReward;
+                                blocksProduced++;
                             }
-                        }
-
-                        // Sum outputs (skip first output which is empty in coinstake)
-                        for (size_t i = 1; i < wtx.tx->vout.size(); i++) {
-                            if (pwallet->IsMine(wtx.tx->vout[i])) {
-                                nOutput += wtx.tx->vout[i].nValue;
-                            }
-                        }
-
-                        CAmount nReward = nOutput - nInput;
-                        if (nReward > 0) {
-                            totalRewards += nReward;
-                            blocksStaked++;
                         }
                     }
                 }
-                ui->myTotalRewards->setText(QString::fromStdString(FormatMoney(totalRewards) + " (" + std::to_string(blocksStaked) + " blocks)"));
+                ui->myBlocksProduced->setText(QString::number(blocksProduced));
+                ui->myTotalRewards->setText(QString::fromStdString(FormatMoney(totalRewards) + " NOTE"));
+
+                // Estimated time until next reward
+                int nEnabledMasternodes = mnodeman.CountEnabled();
+                if (nEnabledMasternodes <= 0) nEnabledMasternodes = 1;
+                int64_t nEstimatedSeconds = 45 * nEnabledMasternodes; // 45s PoS target * number of MNs
+                int hours = nEstimatedSeconds / 3600;
+                int minutes = (nEstimatedSeconds % 3600) / 60;
+                int seconds = nEstimatedSeconds % 60;
+                QString timeStr;
+                if (hours > 0) timeStr += QString::number(hours) + "h ";
+                if (minutes > 0) timeStr += QString::number(minutes) + "m ";
+                timeStr += QString::number(seconds) + "s";
+                ui->myEstimatedTime->setText(timeStr);
 
                 break;
             }
@@ -266,6 +267,12 @@ void MasternodeList::on_startButton_clicked()
             }
 
             if (mnodeman.Add(mn)) {
+                // Lock the collateral UTXO — it is never spent
+                pwallet->LockCoin(outpoint);
+
+                // Enable staking now that masternode is registered
+                masternodeMiner.EnableStaking();
+
                 // Broadcast masternode to network
                 if (g_connman) {
                     g_connman->ForEachNode([&mn](CNode* pnode) {
@@ -275,7 +282,7 @@ void MasternodeList::on_startButton_clicked()
                 }
 
                 QMessageBox::information(this, tr("Success"),
-                    tr("Masternode started successfully!"),
+                    tr("Masternode started, collateral locked!"),
                     QMessageBox::Ok, QMessageBox::Ok);
                 updateMyNodeList();
                 return;
@@ -291,4 +298,64 @@ void MasternodeList::on_startButton_clicked()
             tr("No masternode collateral (%1) found in your wallet.").arg(collateralAmount),
             QMessageBox::Ok, QMessageBox::Ok);
     }
+}
+
+void MasternodeList::on_stopButton_clicked()
+{
+    if (!walletModel || !walletModel->getWallet())
+        return;
+
+    CWallet* pwallet = walletModel->getWallet();
+
+    // Find our masternode by IP
+    std::string externalIP = gArgs.GetArg("-externalip", "");
+    if (externalIP.empty()) {
+        QMessageBox::warning(this, tr("Configuration Error"),
+            tr("No external IP configured."),
+            QMessageBox::Ok, QMessageBox::Ok);
+        return;
+    }
+
+    CService addr;
+    if (!Lookup(externalIP.c_str(), addr, Params().GetDefaultPort(), false)) {
+        QMessageBox::warning(this, tr("Error"),
+            tr("Failed to lookup external IP address."),
+            QMessageBox::Ok, QMessageBox::Ok);
+        return;
+    }
+
+    CMasternode* pmn = mnodeman.FindByIP(addr);
+    if (!pmn) {
+        QMessageBox::information(this, tr("Not Running"),
+            tr("No active masternode found for this IP address."),
+            QMessageBox::Ok, QMessageBox::Ok);
+        return;
+    }
+
+    // Verify we own this masternode's collateral
+    const CWalletTx* wtx = pwallet->GetWalletTx(pmn->outpoint.hash);
+    if (!wtx || pmn->outpoint.n >= wtx->tx->vout.size() ||
+        !pwallet->IsMine(wtx->tx->vout[pmn->outpoint.n])) {
+        QMessageBox::warning(this, tr("Error"),
+            tr("Masternode collateral not owned by this wallet."),
+            QMessageBox::Ok, QMessageBox::Ok);
+        return;
+    }
+
+    COutPoint removedOutpoint = pmn->outpoint;
+
+    // Unlock the collateral
+    pwallet->UnlockCoin(removedOutpoint);
+
+    // Remove from masternode list
+    mnodeman.Remove(removedOutpoint);
+
+    // Disable staking
+    masternodeMiner.DisableStaking();
+
+    QMessageBox::information(this, tr("Stopped"),
+        tr("Masternode stopped, collateral unlocked."),
+        QMessageBox::Ok, QMessageBox::Ok);
+
+    updateMyNodeList();
 }

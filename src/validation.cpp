@@ -1610,18 +1610,25 @@ DisconnectResult CChainState::DisconnectBlock(const CBlock& block, const CBlockI
 
         // restore inputs
         if (i > 0) { // not coinbases
-            CTxUndo &txundo = blockUndo.vtxundo[i-1];
-            if (txundo.vprevout.size() != tx.vin.size()) {
-                error("DisconnectBlock(): transaction and undo data inconsistent");
-                return DISCONNECT_FAILED;
+            // For proof tx (masternode block, i==1, coinstake), the collateral input
+            // was never spent, so there are no undo entries. Skip input restoration.
+            bool fIsProofTx = (i == 1 && is_coinstake && block.IsProofOfStake());
+            if (fIsProofTx) {
+                // No inputs to restore - collateral was never spent
+            } else {
+                CTxUndo &txundo = blockUndo.vtxundo[i-1];
+                if (txundo.vprevout.size() != tx.vin.size()) {
+                    error("DisconnectBlock(): transaction and undo data inconsistent");
+                    return DISCONNECT_FAILED;
+                }
+                for (unsigned int j = tx.vin.size(); j-- > 0;) {
+                    const COutPoint &out = tx.vin[j].prevout;
+                    int res = ApplyTxInUndo(std::move(txundo.vprevout[j]), view, out);
+                    if (res == DISCONNECT_FAILED) return DISCONNECT_FAILED;
+                    fClean = fClean && res != DISCONNECT_UNCLEAN;
+                }
+                // At this point, all of txundo.vprevout should have been moved out.
             }
-            for (unsigned int j = tx.vin.size(); j-- > 0;) {
-                const COutPoint &out = tx.vin[j].prevout;
-                int res = ApplyTxInUndo(std::move(txundo.vprevout[j]), view, out);
-                if (res == DISCONNECT_FAILED) return DISCONNECT_FAILED;
-                fClean = fClean && res != DISCONNECT_UNCLEAN;
-            }
-            // At this point, all of txundo.vprevout should have been moved out.
         }
     }
 
@@ -1935,13 +1942,20 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
     blockundo.vtxundo.reserve(block.vtx.size() - 1);
     std::vector<PrecomputedTransactionData> txdata;
     txdata.reserve(block.vtx.size()); // Required so that pointers to individual PrecomputedTransactionData don't get invalidated
+    // Determine if this is a masternode proof tx block (collateral not spent)
+    bool fIsProofOfStake = block.IsProofOfStake();
+
     for (unsigned int i = 0; i < block.vtx.size(); i++)
     {
         const CTransaction &tx = *(block.vtx[i]);
 
         nInputs += tx.vin.size();
 
-        if (!tx.IsCoinBase())
+        // The proof tx (i==1 in masternode blocks) references but does NOT spend the collateral.
+        // Skip CheckTxInputs for it (like coinbase), since it creates value from nothing.
+        bool fIsProofTx = (i == 1 && fIsProofOfStake && tx.IsCoinStake());
+
+        if (!tx.IsCoinBase() && !fIsProofTx)
         {
             CAmount txfee = 0;
             if (!Consensus::CheckTxInputs(tx, state, view, pindex->nHeight, txfee)) {
@@ -1977,6 +1991,10 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
                              REJECT_INVALID, "bad-blk-sigops");
 
         txdata.emplace_back(tx);
+
+        // Verify signatures for non-coinbase transactions.
+        // For the proof tx, we still verify the signature to prove ownership
+        // of the collateral's private key, even though the UTXO is not spent.
         if (!tx.IsCoinBase())
         {
             std::vector<CScriptCheck> vChecks;
@@ -1991,59 +2009,62 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
         if (i > 0) {
             blockundo.vtxundo.push_back(CTxUndo());
         }
-        UpdateCoins(tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back(), pindex->nHeight);
+
+        if (fIsProofTx) {
+            // Proof tx: add outputs to UTXO set but do NOT spend the collateral input.
+            // The collateral remains in the UTXO set permanently.
+            AddCoins(view, tx, pindex->nHeight);
+        } else {
+            UpdateCoins(tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back(), pindex->nHeight);
+        }
     }
     int64_t nTime3 = GetTimeMicros(); nTimeConnect += nTime3 - nTime2;
     LogPrint(BCLog::BENCH, "      - Connect %u transactions: %.2fms (%.3fms/tx, %.3fms/txin) [%.2fs (%.2fms/blk)]\n", (unsigned)block.vtx.size(), MILLI * (nTime3 - nTime2), MILLI * (nTime3 - nTime2) / block.vtx.size(), nInputs <= 1 ? 0 : MILLI * (nTime3 - nTime2) / (nInputs-1), nTimeConnect * MICRO, nTimeConnect * MILLI / nBlocksTotal);
 
     CAmount blockReward = nFees + GetBlockSubsidy(pindex->nHeight, chainparams.GetConsensus());
 
-    // PoS: Verify coinstake outputs and rewards
+    // Masternode block: Verify proof tx structure and reward
+    // The proof tx references the collateral UTXO (not spent) and receives the block reward
     if (block.IsProofOfStake()) {
-        // Verify coinstake structure: must have exactly 3 outputs
-        // Output 0: empty (kernel marker), Output 1: collateral return, Output 2: reward
-        if (block.vtx[1]->vout.size() != 3)
-            return state.DoS(100, error("ConnectBlock(): coinstake must have exactly 3 outputs, got %d", block.vtx[1]->vout.size()),
+        // Verify proof tx structure: must have exactly 2 outputs
+        // Output 0: empty (kernel marker), Output 1: block reward to MN operator
+        if (block.vtx[1]->vout.size() != 2)
+            return state.DoS(100, error("ConnectBlock(): proof tx must have exactly 2 outputs, got %d", block.vtx[1]->vout.size()),
                            REJECT_INVALID, "bad-pos-outputs");
 
         // Verify output 0 is empty (kernel marker)
         if (!block.vtx[1]->vout[0].IsNull())
-            return state.DoS(100, error("ConnectBlock(): coinstake output 0 must be empty"),
+            return state.DoS(100, error("ConnectBlock(): proof tx output 0 must be empty"),
                            REJECT_INVALID, "bad-pos-kernel");
 
-        // Verify the input (must have exactly 1 input)
+        // Verify the input (must have exactly 1 input referencing the collateral)
         if (block.vtx[1]->vin.size() != 1)
-            return state.DoS(100, error("ConnectBlock(): coinstake must have exactly 1 input, got %d", block.vtx[1]->vin.size()),
+            return state.DoS(100, error("ConnectBlock(): proof tx must have exactly 1 input, got %d", block.vtx[1]->vin.size()),
                            REJECT_INVALID, "bad-pos-inputs");
 
-        // Get the input coin to verify collateral amount and destination
+        // Verify the collateral UTXO exists and is unspent
+        // Since we never spend the collateral, it should always be in the UTXO set
         const COutPoint& prevout = block.vtx[1]->vin[0].prevout;
         const Coin& coin = view.AccessCoin(prevout);
         if (coin.IsSpent())
-            return state.DoS(100, error("ConnectBlock(): coinstake input already spent"),
+            return state.DoS(100, error("ConnectBlock(): proof tx collateral UTXO is spent"),
                            REJECT_INVALID, "bad-pos-input-spent");
 
-        // Verify input value matches masternode collateral
+        // Verify collateral amount matches masternode requirement
         if (coin.out.nValue != chainparams.GetConsensus().nMasternodeCollateral)
-            return state.DoS(100, error("ConnectBlock(): coinstake input value %d doesn't match collateral %d",
+            return state.DoS(100, error("ConnectBlock(): proof tx collateral value %d doesn't match required %d",
                            coin.out.nValue, chainparams.GetConsensus().nMasternodeCollateral),
                            REJECT_INVALID, "bad-pos-input-value");
 
-        // Verify collateral is returned to the same address in output 1
-        if (block.vtx[1]->vout[1].nValue != chainparams.GetConsensus().nMasternodeCollateral)
-            return state.DoS(100, error("ConnectBlock(): coinstake output 1 value %d doesn't match collateral %d",
-                           block.vtx[1]->vout[1].nValue, chainparams.GetConsensus().nMasternodeCollateral),
-                           REJECT_INVALID, "bad-pos-collateral");
-
-        // Verify collateral is returned to the same scriptPubKey (same address)
+        // Verify block reward goes to the collateral's address
         if (block.vtx[1]->vout[1].scriptPubKey != coin.out.scriptPubKey)
-            return state.DoS(100, error("ConnectBlock(): coinstake output 1 doesn't return to input address"),
+            return state.DoS(100, error("ConnectBlock(): proof tx reward doesn't go to collateral address"),
                            REJECT_INVALID, "bad-pos-destination");
 
-        // Verify coinstake reward (output 2)
-        CAmount nStakeReward = block.vtx[1]->vout[2].nValue;
-        if (nStakeReward > blockReward)
-            return state.DoS(100, error("ConnectBlock(): coinstake pays too much (actual=%d vs limit=%d)", nStakeReward, blockReward),
+        // Verify reward amount doesn't exceed block reward
+        CAmount nReward = block.vtx[1]->vout[1].nValue;
+        if (nReward > blockReward)
+            return state.DoS(100, error("ConnectBlock(): proof tx pays too much (actual=%d vs limit=%d)", nReward, blockReward),
                            REJECT_INVALID, "bad-pos-amount");
 
         // Verify IP uniqueness - one masternode per IP address
@@ -2051,10 +2072,8 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
         CMasternode* pmn = mnodeman.Find(masternodeOutpoint);
 
         if (!pmn) {
-            // Masternode not found - this shouldn't happen if properly registered
             LogPrintf("ConnectBlock(): Warning - Masternode %s not found in registry\n", masternodeOutpoint.ToString());
         } else {
-            // Verify no other masternode uses this IP
             CService mnAddr = pmn->addr;
             int countWithSameIP = 0;
 
@@ -2069,7 +2088,7 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
             }
         }
 
-        // All PoS validation passed - set the PoS flag and compute stake modifier
+        // All validation passed - set the PoS flag and compute stake modifier
         pindex->SetProofOfStake();
         ComputeNextStakeModifier(pindex->pprev, pindex->nStakeModifier);
     } else {

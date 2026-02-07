@@ -64,16 +64,7 @@ bool CMasternodeMiner::SelectMasternodeCoins(std::vector<COutput>& vCoins,
                                             CWallet* pwallet,
                                             const Consensus::Params& params)
 {
-    std::vector<COutput> vAvailableCoins;
-    // Get all available coins
-    // IMPORTANT: Include immature coinstake outputs for masternode re-registration
-    // After staking, the new collateral is immature for 100 blocks but we still need to re-register
-    pwallet->AvailableCoins(vAvailableCoins, true, nullptr, 1, MAX_MONEY, MAX_MONEY, 0, 0, 9999999);
-
-    LogPrintf("CMasternodeMiner: AvailableCoins returned %d coins (including immature), looking for %s\n",
-             vAvailableCoins.size(), FormatMoney(params.nMasternodeCollateral));
-
-    // Get the external IP from config (same as GUI/RPC uses)
+    // Get the external IP from config
     std::string externalIP = gArgs.GetArg("-externalip", "");
     if (externalIP.empty()) {
         LogPrintf("CMasternodeMiner: No external IP configured. Add 'externalip=YOUR.IP.ADDRESS' to noteblockchain.conf\n");
@@ -86,158 +77,61 @@ bool CMasternodeMiner::SelectMasternodeCoins(std::vector<COutput>& vCoins,
         return false;
     }
 
-    LogPrintf("CMasternodeMiner: Our configured IP: %s\n", myAddr.ToString());
-
-    // Check if WE (this wallet) have a masternode registered for our IP
-    // We need to verify the masternode belongs to US, not just any wallet on this IP
-    // This prevents auto-registration if another wallet on the same IP has a masternode
-    bool fHadMasternodeForIP = false;
-    std::vector<CMasternode> vMasternodes = mnodeman.GetFullMasternodeVector();
-    for (const auto& mn : vMasternodes) {
-        if (mn.addr == myAddr) {
-            // Found a masternode with our IP - check if we own its collateral
-            const CWalletTx* wtx = pwallet->GetWalletTx(mn.outpoint.hash);
-            if (wtx && mn.outpoint.n < wtx->tx->vout.size()) {
-                if (pwallet->IsMine(wtx->tx->vout[mn.outpoint.n])) {
-                    // This masternode belongs to us!
-                    fHadMasternodeForIP = true;
-                    LogPrintf("CMasternodeMiner: Found our own masternode for IP %s (may need re-registration)\n",
-                             myAddr.ToString());
-                    break;
-                }
-            }
-        }
+    // Find our registered masternode for this IP
+    CMasternode* pmn = mnodeman.FindByIP(myAddr);
+    if (!pmn || !pmn->IsEnabled()) {
+        LogPrintf("CMasternodeMiner: No active masternode registered for IP %s. Run 'masternode start' to activate.\n", myAddr.ToString());
+        return false;
     }
 
-    // Find masternodes that match BOTH our wallet UTXOs AND our configured external IP
+    // Verify we own the registered masternode's collateral
+    const CWalletTx* wtx = pwallet->GetWalletTx(pmn->outpoint.hash);
+    if (!wtx || pmn->outpoint.n >= wtx->tx->vout.size() || !pwallet->IsMine(wtx->tx->vout[pmn->outpoint.n])) {
+        LogPrintf("CMasternodeMiner: Registered masternode collateral %s not found in our wallet\n", pmn->outpoint.ToString());
+        return false;
+    }
+
+    // Verify the collateral UTXO still exists and is unspent
+    Coin coin;
+    if (!pcoinsTip || !pcoinsTip->GetCoin(pmn->outpoint, coin) || coin.IsSpent()) {
+        LogPrintf("CMasternodeMiner: Collateral UTXO %s is spent or missing\n", pmn->outpoint.ToString());
+        return false;
+    }
+
+    // Verify the collateral amount
+    if (coin.out.nValue != params.nMasternodeCollateral) {
+        LogPrintf("CMasternodeMiner: Collateral UTXO value mismatch\n");
+        return false;
+    }
+
+    // Check minimum confirmations
+    int nDepth = chainActive.Height() - coin.nHeight + 1;
+    if (nDepth < params.nMasternodeMinimumConfirmations) {
+        LogPrintf("CMasternodeMiner: Collateral %s needs %d more confirmations (has %d)\n",
+                 pmn->outpoint.ToString(),
+                 params.nMasternodeMinimumConfirmations - nDepth,
+                 nDepth);
+        return false;
+    }
+
+    // Build a COutput for the collateral — the UTXO is locked, never spent
+    LogPrintf("CMasternodeMiner: Using locked collateral %s at %s\n",
+             pmn->outpoint.ToString(), pmn->addr.ToString());
+
+    // Find this output in the wallet's available coins to get a proper COutput
+    std::vector<COutput> vAvailableCoins;
+    pwallet->AvailableCoins(vAvailableCoins, true, nullptr, 1, MAX_MONEY, MAX_MONEY, 0, 0, 9999999);
+
     for (const COutput& out : vAvailableCoins) {
-        LogPrintf("CMasternodeMiner:   Checking coin %s:%d value=%s depth=%d\n",
-                 out.tx->GetHash().ToString().substr(0,10), out.i,
-                 FormatMoney(out.tx->tx->vout[out.i].nValue), out.nDepth);
-        if (out.tx->tx->vout[out.i].nValue == params.nMasternodeCollateral) {
-            COutPoint outpoint(out.tx->GetHash(), out.i);
-
-            // Check if this is from a coinstake (PoS block reward)
-            bool fIsFromCoinstake = out.tx->tx->IsCoinStake();
-
-            // Check if mature enough
-            if (out.nDepth < params.nMasternodeMinimumConfirmations) {
-                LogPrintf("CMasternodeMiner: Collateral %s needs %d more confirmations (has %d)\n",
-                         outpoint.ToString(),
-                         params.nMasternodeMinimumConfirmations - out.nDepth,
-                         out.nDepth);
-                continue;
-            }
-
-            // CRITICAL: Coinstake outputs need 100 blocks maturity before they can stake
-            // But we still need to register them to keep the masternode active
-            bool fCanStakeWithThisCoin = true;
-            if (fIsFromCoinstake && out.nDepth < COINBASE_MATURITY) {
-                LogPrintf("CMasternodeMiner: Coinstake output %s is immature (depth=%d, needs %d), can register but cannot stake yet\n",
-                         outpoint.ToString(), out.nDepth, COINBASE_MATURITY);
-                fCanStakeWithThisCoin = false;
-            }
-
-            // Check if this UTXO is registered as a masternode
-            CMasternode* pmn = mnodeman.Find(outpoint);
-            if (pmn && pmn->IsEnabled() && pmn->addr == myAddr) {
-                if (fCanStakeWithThisCoin) {
-                    // Already registered with correct IP and mature - use it for staking
-                    LogPrintf("CMasternodeMiner: Using registered masternode %s at %s\n",
-                             outpoint.ToString(), pmn->addr.ToString());
-                    vCoins.push_back(out);
-                    return true;
-                } else {
-                    // Registered but immature - keep looking for a mature coin
-                    LogPrintf("CMasternodeMiner: Masternode %s is registered but collateral is immature, waiting for maturity\n",
-                             outpoint.ToString());
-                    continue;
-                }
-            }
-
-            // If we previously had a masternode for this IP, allow re-registration
-            // This handles the case where we staked and the UTXO changed
-            if (fHadMasternodeForIP) {
-                LogPrintf("CMasternodeMiner: Re-registering masternode with new collateral %s (previous collateral was spent)\n",
-                         outpoint.ToString());
-
-                // Clean up any masternodes with spent UTXOs
-                mnodeman.CheckAndRemove();
-
-                // Get the public key and private key for this output
-                CTxDestination dest;
-                if (!ExtractDestination(out.tx->tx->vout[out.i].scriptPubKey, dest)) {
-                    LogPrintf("CMasternodeMiner: Failed to extract destination from output\n");
-                    continue;
-                }
-
-                CKeyID keyID = GetKeyForDestination(*pwallet, dest);
-                CPubKey pubKey;
-                if (!pwallet->GetPubKey(keyID, pubKey)) {
-                    LogPrintf("CMasternodeMiner: Failed to get public key\n");
-                    continue;
-                }
-
-                // Get the private key for signing
-                CKey key;
-                if (!pwallet->GetKey(keyID, key)) {
-                    LogPrintf("CMasternodeMiner: Failed to get private key for signing\n");
-                    continue;
-                }
-
-                // Remove any existing masternode with our IP (old spent UTXO)
-                if (mnodeman.HasIP(myAddr)) {
-                    CMasternode* existingMN = mnodeman.FindByIP(myAddr);
-                    if (existingMN) {
-                        mnodeman.Remove(existingMN->outpoint);
-                        LogPrintf("CMasternodeMiner: Removed old masternode entry %s\n",
-                                 existingMN->outpoint.ToString());
-                    }
-                }
-
-                // Verify UTXO still exists
-                Coin coin;
-                if (!pcoinsTip || !pcoinsTip->GetCoin(outpoint, coin) || coin.IsSpent()) {
-                    LogPrintf("CMasternodeMiner: UTXO %s was spent during registration attempt, skipping\n",
-                             outpoint.ToString());
-                    continue;
-                }
-
-                // Create and sign masternode entry
-                CMasternode mn(outpoint, myAddr, pubKey);
-                if (!mn.Sign(key)) {
-                    LogPrintf("CMasternodeMiner: Failed to sign masternode announcement\n");
-                    continue;
-                }
-
-                if (mnodeman.Add(mn)) {
-                    LogPrintf("CMasternodeMiner: Successfully re-registered masternode with collateral %s at %s\n",
-                             outpoint.ToString(), myAddr.ToString());
-
-                    // Broadcast to network
-                    if (g_connman) {
-                        g_connman->ForEachNode([&mn](CNode* pnode) {
-                            g_connman->PushMessage(pnode, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::MNANNOUNCE, mn));
-                        });
-                        LogPrintf("CMasternodeMiner: Broadcast re-registered masternode to network\n");
-                    }
-
-                    vCoins.push_back(out);
-                    return true;
-                } else {
-                    LogPrintf("CMasternodeMiner: Failed to add masternode\n");
-                }
-            } else {
-                // NOT auto-registering - user must explicitly run 'masternode start'
-                // This prevents masternodes from becoming active without user consent
-                LogPrintf("CMasternodeMiner: Found collateral %s but not registered. Run 'masternode start' to activate.\n",
-                         outpoint.ToString());
-            }
+        COutPoint outpoint(out.tx->GetHash(), out.i);
+        if (outpoint == pmn->outpoint) {
+            vCoins.push_back(out);
+            return true;
         }
     }
 
-    LogPrintf("CMasternodeMiner: No active masternodes found matching IP %s\n", myAddr.ToString());
-    LogPrintf("CMasternodeMiner: Use 'masternode start' command to register a masternode\n");
+    LogPrintf("CMasternodeMiner: Collateral UTXO %s exists but not available in wallet (may be immature)\n",
+             pmn->outpoint.ToString());
     return false;
 }
 
@@ -255,7 +149,6 @@ bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
 
     // Check if wallet is unlocked for staking
     if (pwallet->IsLocked()) {
-        // Wallet is locked, cannot stake
         return false;
     }
 
@@ -266,16 +159,11 @@ bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
 
     // Try each coin
     for (const COutput& coin : vCoins) {
-        // Get the transaction
         const CWalletTx* wtx = coin.tx;
         if (!wtx)
             continue;
 
         COutPoint prevout(wtx->GetHash(), coin.i);
-
-        // Lock the coin to prevent it from being spent by regular transactions
-        // while we're attempting to stake with it
-        pwallet->LockCoin(prevout);
 
         // Try different timestamps (current time + up to 30 seconds into future)
         int64_t nCurrentTime = GetAdjustedTime();
@@ -284,13 +172,10 @@ bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
                  wtx->GetHash().ToString().substr(0,10), coin.i,
                  FormatMoney(coin.tx->tx->vout[coin.i].nValue), coin.nDepth);
 
-        bool fStakeSuccess = false;
         for (unsigned int nTryTime = nCurrentTime; nTryTime <= nCurrentTime + 30; nTryTime++) {
-            // Check if this coin can stake at this time
             uint256 hashProofOfStake;
 
             // Get the block index where this coin was created
-            // coin.nDepth is confirmations, so we go back that many blocks from tip
             const CBlockIndex* pindexFrom = pindexPrev;
             for (int i = 0; i < coin.nDepth - 1 && pindexFrom; i++) {
                 pindexFrom = pindexFrom->pprev;
@@ -305,30 +190,27 @@ bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
 
             if (CheckStakeKernelHash(nBits, pindexFrom, txPrev, prevout,
                                    nTryTime, hashProofOfStake, params)) {
-                // Found valid stake!
+                // Found valid stake! Build the proof transaction.
+                // The collateral is NOT spent — the input reference + signature
+                // proves ownership of the locked collateral UTXO.
                 CMutableTransaction txNewMut;
                 nTxNewTime = nTryTime;
 
-                // Input: the masternode collateral
+                // Input: reference the collateral outpoint (proves ownership, NOT spent)
                 txNewMut.vin.resize(1);
                 txNewMut.vin[0].prevout = prevout;
 
-                // Calculate stake reward
+                // Calculate block reward
                 CAmount nReward = GetBlockSubsidy(pindexPrev->nHeight + 1, params);
 
-                // Output 0: empty (kernel marker)
-                txNewMut.vout.resize(3);
+                // Output 0: empty marker (keeps IsCoinStake() = true for block identification)
+                // Output 1: full block reward to the masternode operator's address
+                txNewMut.vout.resize(2);
                 txNewMut.vout[0].SetEmpty();
-
-                // Output 1: return collateral to same address
-                txNewMut.vout[1].nValue = params.nMasternodeCollateral;
+                txNewMut.vout[1].nValue = nReward;
                 txNewMut.vout[1].scriptPubKey = wtx->tx->vout[coin.i].scriptPubKey;
 
-                // Output 2: stake reward to same address
-                txNewMut.vout[2].nValue = nReward;
-                txNewMut.vout[2].scriptPubKey = wtx->tx->vout[coin.i].scriptPubKey;
-
-                // Sign the transaction
+                // Sign the input to prove we own the collateral's private key
                 const CKeyStore& keystore = *pwallet;
                 SignatureData sigdata;
 
@@ -337,20 +219,12 @@ bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
                     continue;
                 }
 
-                // Update transaction input with signature
                 txNewMut.vin[0].scriptSig = sigdata.scriptSig;
                 txNewMut.vin[0].scriptWitness = sigdata.scriptWitness;
 
                 txNew = txNewMut;
-                fStakeSuccess = true;
-                // Keep the coin locked - it will be spent by the coinstake transaction
                 return true;
             }
-        }
-
-        // If we didn't successfully stake, unlock the coin so it can be used for other transactions
-        if (!fStakeSuccess) {
-            pwallet->UnlockCoin(prevout);
         }
     }
 
@@ -415,14 +289,19 @@ int64_t CMasternodeMiner::GetExpectedStakeTime(const CChainParams& chainparams, 
 {
     const Consensus::Params& params = chainparams.GetConsensus();
 
-    // Get number of stakeable coins
+    // Check if we have stakeable coins
     std::vector<COutput> vCoins;
     if (!SelectMasternodeCoins(vCoins, params.nMasternodeCollateral, pwallet, params))
         return -1;
 
-    // Simple estimate: with 30% target weight, expect stake every ~100 seconds on average
-    // This is a rough estimate - actual time varies based on network difficulty
-    return 100;
+    // Estimate: PoS targets 45s spacing. With N masternodes competing,
+    // each one expects a block every 45 * N seconds on average.
+    int nEnabledMasternodes = mnodeman.CountEnabled();
+    if (nEnabledMasternodes <= 0)
+        nEnabledMasternodes = 1;
+
+    const int64_t nPoSTargetSpacing = 45; // seconds between PoS blocks
+    return nPoSTargetSpacing * nEnabledMasternodes;
 }
 
 // Staking thread - runs continuously, competing with PoW miners
@@ -484,11 +363,9 @@ void ThreadStakeMinter(CWallet* pwallet)
 
                 if (ProcessNewBlock(Params(), shared_pblock, true, &fNewBlock)) {
                     if (fNewBlock) {
-                        LogPrintf("ThreadStakeMinter: PoS block accepted! Height=%d Hash=%s\n",
+                        LogPrintf("ThreadStakeMinter: Masternode block accepted! Height=%d Hash=%s\n",
                                  chainActive.Height(), block.GetHash().ToString());
-                        LogPrintf("ThreadStakeMinter: Coinstake output will mature in %d blocks\n",
-                                 COINBASE_MATURITY);
-                        LogPrintf("ThreadStakeMinter: Masternode will automatically re-register after maturity\n");
+                        LogPrintf("ThreadStakeMinter: Collateral remains locked, reward in proof tx output\n");
                     }
                 }
             }
