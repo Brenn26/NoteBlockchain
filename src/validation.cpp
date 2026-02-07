@@ -2033,7 +2033,7 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
                            REJECT_INVALID, "bad-pos-outputs");
 
         // Verify output 0 is empty (kernel marker)
-        if (!block.vtx[1]->vout[0].IsNull())
+        if (!block.vtx[1]->vout[0].IsEmpty())
             return state.DoS(100, error("ConnectBlock(): proof tx output 0 must be empty"),
                            REJECT_INVALID, "bad-pos-kernel");
 
