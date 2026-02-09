@@ -85,9 +85,21 @@ bool CMasternodeMiner::SelectMasternodeCoins(std::vector<COutput>& vCoins,
     }
 
     // Verify we own the registered masternode's collateral
+    // Note: After staking, the wallet's BlockConnected notification is async,
+    // so the coinstake tx may not be in mapWallet yet. We verify via pcoinsTip instead.
     const CWalletTx* wtx = pwallet->GetWalletTx(pmn->outpoint.hash);
-    if (!wtx || pmn->outpoint.n >= wtx->tx->vout.size() || !pwallet->IsMine(wtx->tx->vout[pmn->outpoint.n])) {
-        LogPrintf("CMasternodeMiner: Registered masternode collateral %s not found in our wallet\n", pmn->outpoint.ToString());
+    if (!wtx) {
+        // Wallet may not have synced yet after last block — verify UTXO directly
+        Coin coin;
+        if (pcoinsTip && pcoinsTip->GetCoin(pmn->outpoint, coin) && !coin.IsSpent()) {
+            LogPrintf("CMasternodeMiner: Collateral %s not yet in wallet (async sync), but UTXO exists — skipping this round\n", pmn->outpoint.ToString());
+        } else {
+            LogPrintf("CMasternodeMiner: Registered masternode collateral %s not found in our wallet or UTXO set\n", pmn->outpoint.ToString());
+        }
+        return false;
+    }
+    if (pmn->outpoint.n >= wtx->tx->vout.size() || !pwallet->IsMine(wtx->tx->vout[pmn->outpoint.n])) {
+        LogPrintf("CMasternodeMiner: Registered masternode collateral %s not owned by our wallet\n", pmn->outpoint.ToString());
         return false;
     }
 
@@ -361,6 +373,10 @@ void ThreadStakeMinter(CWallet* pwallet)
 
                 if (ProcessNewBlock(Params(), shared_pblock, true, &fNewBlock)) {
                     if (fNewBlock) {
+                        // Flush async validation callbacks so the wallet sees the
+                        // coinstake transaction before we try to update the outpoint
+                        GetMainSignals().FlushBackgroundCallbacks();
+
                         const CTransaction& cs = *block.vtx[1];
                         LogPrintf("ThreadStakeMinter: Masternode block accepted! Height=%d Hash=%s "
                                  "coinstake_txid=%s vout_count=%d vout[1]=%s vout[2]=%s\n",

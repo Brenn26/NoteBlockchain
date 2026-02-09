@@ -2856,7 +2856,10 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     }
 
     else if (strCommand == NetMsgType::MNANNOUNCE) {
-        // Rate-limit: max 5 MNANNOUNCE messages per peer per 60 seconds
+        // Rate-limit: max 50 MNANNOUNCE messages per peer per 60 seconds
+        // This is generous enough to handle GETMNLIST responses (which send
+        // one MNANNOUNCE per registered masternode) while still preventing spam.
+        // The UTXO verification + signature check below already prevents fake announcements.
         {
             static std::map<NodeId, std::pair<int, int64_t>> mapMNAnnounceRateLimit;
             int64_t nNow = GetTime();
@@ -2866,7 +2869,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 entry.second = nNow;
             }
             entry.first++;
-            if (entry.first > 5) {
+            if (entry.first > 50) {
                 LogPrint(BCLog::NET, "MNANNOUNCE rate limit exceeded from peer=%d, ignoring\n", pfrom->GetId());
                 Misbehaving(pfrom->GetId(), 10);
                 return true;
