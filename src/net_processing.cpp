@@ -2890,15 +2890,17 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             return true;
         }
 
-        // CRITICAL SECURITY: Verify UTXO exists and matches the claimed pubkey
+        // Verify UTXO exists and matches the claimed pubkey.
+        // NOTE: Do NOT penalize peers for missing/spent UTXOs — the peer may be
+        // ahead of us (we could still be syncing), or the UTXO may be in a block
+        // we haven't received yet. Only penalize clearly fraudulent data.
         {
             LOCK(cs_main);
             Coin coin;
             if (!pcoinsTip || !pcoinsTip->GetCoin(mn.outpoint, coin) || coin.IsSpent()) {
-                LogPrint(BCLog::NET, "Masternode UTXO %s not found or spent, rejecting from peer=%d\n",
+                LogPrint(BCLog::NET, "Masternode UTXO %s not found or spent, ignoring from peer=%d (may still be syncing)\n",
                         mn.outpoint.ToString(), pfrom->GetId());
-                Misbehaving(pfrom->GetId(), 10); // Punish peer for non-existent UTXO
-                return true;
+                return true; // Silently reject — no Misbehaving penalty
             }
 
             // Verify UTXO scriptPubKey corresponds to the announced pubkey
@@ -2906,30 +2908,29 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             if (!ExtractDestination(coin.out.scriptPubKey, dest)) {
                 LogPrint(BCLog::NET, "Failed to extract destination from UTXO %s, rejecting\n",
                         mn.outpoint.ToString());
-                Misbehaving(pfrom->GetId(), 10);
-                return true;
+                return true; // Silently reject
             }
 
             // Extract CKeyID from CTxDestination (must be P2PKH for masternodes)
             const CKeyID* keyID = boost::get<CKeyID>(&dest);
             if (!keyID) {
-                LogPrint(BCLog::NET, "Masternode UTXO %s is not P2PKH, rejecting\n",
-                        mn.outpoint.ToString());
+                LogPrint(BCLog::NET, "Masternode UTXO %s is not P2PKH, rejecting from peer=%d\n",
+                        mn.outpoint.ToString(), pfrom->GetId());
                 Misbehaving(pfrom->GetId(), 20);
                 return true;
             }
             if (*keyID != mn.pubKeyMasternode.GetID()) {
                 LogPrint(BCLog::NET, "Masternode pubkey doesn't match UTXO, rejecting from peer=%d\n",
                         pfrom->GetId());
-                Misbehaving(pfrom->GetId(), 20); // Punish peer for mismatched pubkey
+                Misbehaving(pfrom->GetId(), 20); // Clearly fraudulent
                 return true;
             }
 
             // Verify UTXO has correct collateral amount
             if (coin.out.nValue != Params().GetConsensus().nMasternodeCollateral) {
-                LogPrint(BCLog::NET, "Masternode UTXO %s has wrong collateral amount, rejecting\n",
-                        mn.outpoint.ToString());
-                Misbehaving(pfrom->GetId(), 20);
+                LogPrint(BCLog::NET, "Masternode UTXO %s has wrong collateral amount, rejecting from peer=%d\n",
+                        mn.outpoint.ToString(), pfrom->GetId());
+                Misbehaving(pfrom->GetId(), 20); // Clearly fraudulent
                 return true;
             }
         }
