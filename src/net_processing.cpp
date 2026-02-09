@@ -2931,6 +2931,28 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
         }
 
+        // One masternode per IP: if this IP already has a registered masternode
+        // with a different outpoint, only allow the update if the old UTXO is spent
+        // (this happens after each PoS block in the spend-and-return model)
+        if (mnodeman.HasIP(mn.addr)) {
+            CMasternode* existingMN = mnodeman.FindByIP(mn.addr);
+            if (existingMN && existingMN->outpoint != mn.outpoint) {
+                // Check if the old UTXO is spent — if so, this is a legitimate
+                // outpoint update after staking, so replace the old entry
+                Coin oldCoin;
+                bool oldSpent = !pcoinsTip || !pcoinsTip->GetCoin(existingMN->outpoint, oldCoin) || oldCoin.IsSpent();
+                if (oldSpent) {
+                    LogPrint(BCLog::NET, "MNANNOUNCE: Replacing masternode at IP %s (old %s UTXO spent) with %s from peer=%d\n",
+                            mn.addr.ToString(), existingMN->outpoint.ToString(), mn.outpoint.ToString(), pfrom->GetId());
+                    mnodeman.Remove(existingMN->outpoint);
+                } else {
+                    LogPrint(BCLog::NET, "MNANNOUNCE rejected: IP %s already has active masternode %s, rejecting %s from peer=%d\n",
+                            mn.addr.ToString(), existingMN->outpoint.ToString(), mn.outpoint.ToString(), pfrom->GetId());
+                    return true;
+                }
+            }
+        }
+
         // All validation passed - add to our masternode list
         if (mnodeman.Add(mn)) {
             LogPrint(BCLog::NET, "Accepted masternode announcement %s, relaying\n",

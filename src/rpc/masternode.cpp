@@ -254,14 +254,15 @@ UniValue masternode(const JSONRPCRequest& request)
                 throw JSONRPCError(RPC_MISC_ERROR, "Failed to lookup external IP address: " + externalIP);
             }
 
-            // Check if this IP is already registered
-            // If so, remove the old entry and update with new one
+            // Reject if this IP already has a registered masternode
+            // Only ONE masternode per public IP address is allowed
             if (mnodeman.HasIP(addr)) {
                 CMasternode* existingMN = mnodeman.FindByIP(addr);
                 if (existingMN) {
-                    mnodeman.Remove(existingMN->outpoint);
-                    LogPrintf("Masternode: Updating %s with new collateral %s (old: %s)\n",
-                             addr.ToString(), foundOutpoint.ToString(), existingMN->outpoint.ToString());
+                    throw JSONRPCError(RPC_MISC_ERROR,
+                        "A masternode is already registered at IP " + addr.ToString() +
+                        " (collateral: " + existingMN->outpoint.ToString() + "). "
+                        "Run 'masternode stop' first to unregister the existing masternode.");
                 }
             }
 

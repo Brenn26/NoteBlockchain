@@ -104,9 +104,11 @@ bool CMasternodeMiner::SelectMasternodeCoins(std::vector<COutput>& vCoins,
         return false;
     }
 
-    // Check minimum confirmations
+    // Check minimum confirmations for initial collateral
+    // Exception: coinstake outputs (returned collateral from staking) can be used immediately
+    // since they are already validated by the chain via CheckProofOfStake
     int nDepth = chainActive.Height() - coin.nHeight + 1;
-    if (nDepth < params.nMasternodeMinimumConfirmations) {
+    if (!coin.IsCoinStake() && nDepth < params.nMasternodeMinimumConfirmations) {
         LogPrintf("CMasternodeMiner: Collateral %s needs %d more confirmations (has %d)\n",
                  pmn->outpoint.ToString(),
                  params.nMasternodeMinimumConfirmations - nDepth,
@@ -389,11 +391,30 @@ void ThreadStakeMinter(CWallet* pwallet)
                             CMasternode mnCopy = *pmn;
                             mnCopy.outpoint = newOutpoint;
                             mnCopy.UpdateLastSeen();
+
+                            // Re-sign with the new outpoint so peers can verify
+                            CKeyID keyID = mnCopy.pubKeyMasternode.GetID();
+                            CKey key;
+                            if (pwallet->GetKey(keyID, key)) {
+                                mnCopy.Sign(key);
+                            }
+
                             // Re-index in masternode manager
                             mnodeman.Remove(oldOutpoint);
                             mnodeman.Add(mnCopy);
                             // Persist to disk immediately to survive crashes
                             mnodeman.Save();
+
+                            // Broadcast updated masternode to network so peers
+                            // update their outpoint before CheckAndRemove removes the old one
+                            if (g_connman) {
+                                g_connman->ForEachNode([&mnCopy](CNode* pnode) {
+                                    g_connman->PushMessage(pnode, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::MNANNOUNCE, mnCopy));
+                                });
+                                LogPrintf("ThreadStakeMinter: Broadcast updated masternode %s to network\n",
+                                         newOutpoint.ToString());
+                            }
+
                             LogPrintf("ThreadStakeMinter: Updated masternode collateral %s -> %s (saved to disk)\n",
                                      oldOutpoint.ToString(), newOutpoint.ToString());
                         }

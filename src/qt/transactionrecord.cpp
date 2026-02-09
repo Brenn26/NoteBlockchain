@@ -35,7 +35,33 @@ QList<TransactionRecord> TransactionRecord::decomposeTransaction(const CWallet *
     uint256 hash = wtx.GetHash();
     std::map<std::string, std::string> mapValue = wtx.mapValue;
 
-    if (nNet > 0 || wtx.IsCoinBase())
+    if (wtx.tx->IsCoinStake())
+    {
+        //
+        // Coinstake (PoS block reward)
+        // Structure: vout[0]=empty marker, vout[1]=collateral return, vout[2]=block reward
+        // Show only the reward (vout[2]) as a "Generated" transaction
+        //
+        if (wtx.tx->vout.size() >= 3)
+        {
+            const CTxOut& txout = wtx.tx->vout[2]; // reward output
+            isminetype mine = wallet->IsMine(txout);
+            if (mine)
+            {
+                TransactionRecord sub(hash, nTime);
+                sub.idx = 2;
+                sub.type = TransactionRecord::Generated;
+                sub.credit = txout.nValue;
+                sub.debit = 0;
+                sub.involvesWatchAddress = mine & ISMINE_WATCH_ONLY;
+                CTxDestination address;
+                if (ExtractDestination(txout.scriptPubKey, address))
+                    sub.address = EncodeDestination(address);
+                parts.append(sub);
+            }
+        }
+    }
+    else if (nNet > 0 || wtx.IsCoinBase())
     {
         //
         // Credit

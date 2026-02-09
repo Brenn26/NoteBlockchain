@@ -66,7 +66,11 @@ QString TransactionDesc::toHTML(CWallet *wallet, CWalletTx &wtx, TransactionReco
     //
     // From
     //
-    if (wtx.IsCoinBase())
+    if (wtx.tx->IsCoinStake())
+    {
+        strHTML += "<b>" + tr("Source") + ":</b> " + tr("PoS Block Reward (Masternode)") + "<br>";
+    }
+    else if (wtx.IsCoinBase())
     {
         strHTML += "<b>" + tr("Source") + ":</b> " + tr("Generated") + "<br>";
     }
@@ -116,7 +120,27 @@ QString TransactionDesc::toHTML(CWallet *wallet, CWalletTx &wtx, TransactionReco
     //
     // Amount
     //
-    if (wtx.IsCoinBase() && nCredit == 0)
+    if (wtx.tx->IsCoinStake() && wtx.tx->vout.size() >= 3)
+    {
+        //
+        // Coinstake (PoS block reward)
+        //
+        CAmount nReward = wtx.tx->vout[2].nValue;
+        strHTML += "<b>" + tr("Block Reward") + ":</b> ";
+        if (wtx.IsInMainChain())
+        {
+            strHTML += BitcoinUnits::formatHtmlWithUnit(unit, nReward);
+            if (wtx.GetBlocksToMaturity() > 0)
+                strHTML += " (" + tr("matures in %n more block(s)", "", wtx.GetBlocksToMaturity()) + ")";
+        }
+        else
+            strHTML += "(" + tr("not accepted") + ")";
+        strHTML += "<br>";
+
+        CAmount nCollateral = wtx.tx->vout[1].nValue;
+        strHTML += "<b>" + tr("Collateral Returned") + ":</b> " + BitcoinUnits::formatHtmlWithUnit(unit, nCollateral) + "<br>";
+    }
+    else if (wtx.IsCoinBase() && nCredit == 0)
     {
         //
         // Coinbase
