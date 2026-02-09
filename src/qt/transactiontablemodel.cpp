@@ -452,7 +452,15 @@ QString TransactionTableModel::formatTxAmount(const TransactionRecord *wtx, bool
     {
         if(!wtx->status.countsForBalance)
         {
-            str = QString("[") + str + QString("]");
+            if(wtx->status.status == TransactionStatus::Immature)
+            {
+                // Show maturity progress for staked/mined transactions
+                str = str + QString(" (%1/%2)").arg(wtx->status.depth).arg(wtx->status.depth + wtx->status.matures_in);
+            }
+            else
+            {
+                str = QString("[") + str + QString("]");
+            }
         }
     }
     return QString(str);
