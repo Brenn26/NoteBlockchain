@@ -2965,6 +2965,14 @@ CBlockIndex* CChainState::AddToBlockIndex(const CBlockHeader& block)
     pindexNew->nTimeMax = (pindexNew->pprev ? std::max(pindexNew->pprev->nTimeMax, pindexNew->nTime) : pindexNew->nTime);
     pindexNew->nChainWork = (pindexNew->pprev ? pindexNew->pprev->nChainWork : 0) + GetBlockProof(*pindexNew);
     pindexNew->RaiseValidity(BLOCK_VALID_TREE);
+
+    // PoS detection at header level: PoS blocks have nNonce=0. We must set
+    // this flag early so GetNextPoSRequired() can find PoS blocks when
+    // validating headers from peers (before ConnectBlock runs).
+    if (block.nNonce == 0 && pindexNew->nHeight > 0) {
+        pindexNew->SetProofOfStake();
+    }
+
     if (pindexBestHeader == nullptr || pindexBestHeader->nChainWork < pindexNew->nChainWork)
         pindexBestHeader = pindexNew;
 
@@ -3299,10 +3307,13 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationSta
         // (PoS blocks use a separate difficulty calculation)
         if (nHeight >= consensusParams.nMasternodeActivationHeight && consensusParams.fAllowPoSBlocks) {
             unsigned int nExpectedPoS = GetNextPoSRequired(pindexPrev, consensusParams);
-            if (block.nBits != nExpectedPoS)
-                return state.DoS(100, false, REJECT_INVALID, "bad-diffbits", false, "incorrect proof of work/stake");
+            if (block.nBits != nExpectedPoS) {
+                LogPrintf("ContextualCheckBlockHeader: bad-diffbits at height %d: block.nBits=%08x, expectedPoW=%08x, expectedPoS=%08x, nNonce=%u\n",
+                         nHeight, block.nBits, nExpectedPoW, nExpectedPoS, block.nNonce);
+                return state.DoS(50, false, REJECT_INVALID, "bad-diffbits", false, "incorrect proof of work/stake");
+            }
         } else {
-            return state.DoS(100, false, REJECT_INVALID, "bad-diffbits", false, "incorrect proof of work");
+            return state.DoS(50, false, REJECT_INVALID, "bad-diffbits", false, "incorrect proof of work");
         }
     }
 
