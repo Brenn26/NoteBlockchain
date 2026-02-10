@@ -373,9 +373,9 @@ void ThreadStakeMinter(CWallet* pwallet)
 
                 if (ProcessNewBlock(Params(), shared_pblock, true, &fNewBlock)) {
                     if (fNewBlock) {
-                        // Flush async validation callbacks so the wallet sees the
-                        // coinstake transaction before we try to update the outpoint
-                        GetMainSignals().FlushBackgroundCallbacks();
+                        // Give the scheduler time to process BlockConnected so the
+                        // wallet sees the coinstake transaction
+                        MilliSleep(500);
 
                         const CTransaction& cs = *block.vtx[1];
                         LogPrintf("ThreadStakeMinter: Masternode block accepted! Height=%d Hash=%s "
