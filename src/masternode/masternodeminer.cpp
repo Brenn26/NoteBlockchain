@@ -192,8 +192,12 @@ bool CMasternodeMiner::CreateCoinStake(const CChainParams& chainparams,
 
         COutPoint prevout(wtx->GetHash(), coin.i);
 
-        // Try different timestamps (current time + up to 30 seconds into future)
+        // Try different timestamps. Must be at least pindexPrev->nTime + 15
+        // to satisfy the PoS minimum gap rule enforced in ConnectBlock.
         int64_t nCurrentTime = GetAdjustedTime();
+        int64_t nMinTime = (int64_t)pindexPrev->nTime + 16; // +16 to be safely above the >15 check
+        if (nCurrentTime < nMinTime)
+            nCurrentTime = nMinTime;
 
         LogPrintf("CMasternodeMiner: Attempting to stake coin %s:%d (value=%s, depth=%d)\n",
                  wtx->GetHash().ToString().substr(0,10), coin.i,
@@ -395,141 +399,148 @@ void ThreadStakeMinter(CWallet* pwallet)
                 std::shared_ptr<const CBlock> shared_pblock = std::make_shared<const CBlock>(block);
                 bool fNewBlock = false;
 
-                if (ProcessNewBlock(Params(), shared_pblock, true, &fNewBlock)) {
-                    if (fNewBlock) {
-                        // Wait for the wallet's async BlockConnected to process the
-                        // coinstake tx. Poll every 100ms for up to 5 seconds.
-                        const uint256& csTxid = block.vtx[1]->GetHash();
-                        for (int nWait = 0; nWait < 50; nWait++) {
-                            MilliSleep(100);
-                            if (pwallet->GetWalletTx(csTxid))
-                                break;
-                        }
-                        if (!pwallet->GetWalletTx(csTxid)) {
-                            LogPrintf("ThreadStakeMinter: WARNING - wallet did not sync coinstake tx %s within 5 seconds\n",
-                                     csTxid.ToString().substr(0, 10));
-                        }
+                ProcessNewBlock(Params(), shared_pblock, true, &fNewBlock);
 
-                        const CTransaction& cs = *block.vtx[1];
-                        LogPrintf("ThreadStakeMinter: Masternode block accepted! Height=%d Hash=%s "
-                                 "coinstake_txid=%s vout_count=%d vout[1]=%s vout[2]=%s\n",
-                                 chainActive.Height(), block.GetHash().ToString(),
-                                 cs.GetHash().ToString().substr(0,10),
-                                 (int)cs.vout.size(),
-                                 FormatMoney(cs.vout.size() > 1 ? cs.vout[1].nValue : 0),
-                                 FormatMoney(cs.vout.size() > 2 ? cs.vout[2].nValue : 0));
+                // CRITICAL: Verify the block was actually accepted into the active chain.
+                // ProcessNewBlock returns true even when ConnectBlock fails (e.g. timestamp
+                // too close). We must check chainActive.Tip() matches our block before
+                // updating the masternode outpoint, otherwise we'd point at a non-existent UTXO.
+                {
+                    LOCK(cs_main);
+                    if (chainActive.Tip()->GetBlockHash() == block.GetHash()) {
+                        // Block is confirmed in active chain — safe to proceed
+                    } else {
+                        LogPrintf("ThreadStakeMinter: Block %s was NOT accepted into active chain (tip is %s at height %d)\n",
+                                 block.GetHash().ToString().substr(0, 10),
+                                 chainActive.Tip()->GetBlockHash().ToString().substr(0, 10),
+                                 chainActive.Height());
+                        MilliSleep(1000);
+                        continue; // Skip outpoint update, try again next iteration
+                    }
+                }
 
-                        // The coinstake spent the old collateral and created a new one in vout[1].
-                        // We need to: unlock old outpoint, lock new outpoint, update MN registration.
-                        const CTransaction& coinstake = *block.vtx[1];
-                        COutPoint oldOutpoint = coinstake.vin[0].prevout;
-                        COutPoint newOutpoint(coinstake.GetHash(), 1); // vout[1] = returned collateral
+                // Wait for the wallet's async BlockConnected to process the
+                // coinstake tx. Poll every 100ms for up to 5 seconds.
+                const uint256& csTxid = block.vtx[1]->GetHash();
+                for (int nWait = 0; nWait < 50; nWait++) {
+                    MilliSleep(100);
+                    if (pwallet->GetWalletTx(csTxid))
+                        break;
+                }
+                if (!pwallet->GetWalletTx(csTxid)) {
+                    LogPrintf("ThreadStakeMinter: WARNING - wallet did not sync coinstake tx %s within 5 seconds\n",
+                             csTxid.ToString().substr(0, 10));
+                }
 
+                const CTransaction& cs = *block.vtx[1];
+                LogPrintf("ThreadStakeMinter: Masternode block accepted! Height=%d Hash=%s "
+                         "coinstake_txid=%s vout_count=%d vout[1]=%s vout[2]=%s\n",
+                         chainActive.Height(), block.GetHash().ToString(),
+                         cs.GetHash().ToString().substr(0,10),
+                         (int)cs.vout.size(),
+                         FormatMoney(cs.vout.size() > 1 ? cs.vout[1].nValue : 0),
+                         FormatMoney(cs.vout.size() > 2 ? cs.vout[2].nValue : 0));
+
+                // The coinstake spent the old collateral and created a new one in vout[1].
+                // We need to: unlock old outpoint, lock new outpoint, update MN registration.
+                const CTransaction& coinstake = *block.vtx[1];
+                COutPoint oldOutpoint = coinstake.vin[0].prevout;
+                COutPoint newOutpoint(coinstake.GetHash(), 1); // vout[1] = returned collateral
+
+                {
+                    LOCK(pwallet->cs_wallet);
+
+                    // Unlock the old (now spent) collateral
+                    pwallet->UnlockCoin(oldOutpoint);
+
+                    // Lock the new collateral outpoint
+                    pwallet->LockCoin(newOutpoint);
+                }
+
+                // Update masternode registration to point to new collateral.
+                // Note: ConnectBlock already re-keyed the outpoint, but we also
+                // re-sign here so the updated MNANNOUNCE can be broadcast to peers.
+                std::string externalIP = gArgs.GetArg("-externalip", "");
+                CService myAddr;
+                CMasternode* pmn = nullptr;
+
+                if (!externalIP.empty() && Lookup(externalIP.c_str(), myAddr, Params().GetDefaultPort(), false)) {
+                    pmn = mnodeman.FindByIP(myAddr);
+                }
+
+                if (pmn) {
+                    COutPoint pmnOldOutpoint = pmn->outpoint;
+                    CMasternode mnCopy = *pmn;
+                    mnCopy.outpoint = newOutpoint;
+                    mnCopy.UpdateLastSeen();
+
+                    // Re-sign with the new outpoint so peers can verify
+                    CKey key;
+                    {
                         LOCK(pwallet->cs_wallet);
+                        pwallet->GetKey(mnCopy.pubKeyMasternode.GetID(), key);
+                    }
+                    if (key.IsValid()) {
+                        mnCopy.Sign(key);
+                        LogPrintf("ThreadStakeMinter: Re-signed masternode with new outpoint %s\n",
+                                 newOutpoint.ToString());
+                    } else {
+                        LogPrintf("ThreadStakeMinter: WARNING - failed to get key for re-signing masternode\n");
+                    }
 
-                        // Unlock the old (now spent) collateral
-                        pwallet->UnlockCoin(oldOutpoint);
+                    // Re-index in masternode manager
+                    mnodeman.Remove(pmnOldOutpoint);
+                    mnodeman.Add(mnCopy);
+                    mnodeman.Save();
 
-                        // Lock the new collateral outpoint
-                        pwallet->LockCoin(newOutpoint);
+                    // Reset cleanup counter
+                    nCleanupCounter = 0;
 
-                        // Update masternode registration to point to new collateral.
-                        // Try finding by old outpoint first, fall back to FindByIP
-                        // in case CheckAndRemove already removed the old entry.
-                        CMasternode* pmn = mnodeman.Find(oldOutpoint);
-                        if (!pmn) {
-                            // CheckAndRemove may have already removed the old entry
-                            // (the old UTXO is spent). Look up by our IP instead.
-                            std::string externalIP = gArgs.GetArg("-externalip", "");
-                            CService myAddr;
-                            if (!externalIP.empty() && Lookup(externalIP.c_str(), myAddr, Params().GetDefaultPort(), false)) {
-                                pmn = mnodeman.FindByIP(myAddr);
-                            }
-                            if (pmn) {
-                                LogPrintf("ThreadStakeMinter: Old outpoint already removed, found MN by IP\n");
-                            }
-                        }
+                    // Broadcast updated masternode to network
+                    if (g_connman) {
+                        g_connman->ForEachNode([&mnCopy](CNode* pnode) {
+                            g_connman->PushMessage(pnode, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::MNANNOUNCE, mnCopy));
+                        });
+                        LogPrintf("ThreadStakeMinter: Broadcast updated masternode %s to network\n",
+                                 newOutpoint.ToString());
+                    }
 
-                        if (pmn) {
-                            COutPoint pmnOldOutpoint = pmn->outpoint; // actual current outpoint (may differ from oldOutpoint)
-                            // Copy MN data before removing (pointer invalidated by Remove)
-                            CMasternode mnCopy = *pmn;
-                            mnCopy.outpoint = newOutpoint;
-                            mnCopy.UpdateLastSeen();
+                    LogPrintf("ThreadStakeMinter: Updated masternode collateral %s -> %s (saved to disk)\n",
+                             oldOutpoint.ToString(), newOutpoint.ToString());
+                } else {
+                    // MN entry not found — re-create from scratch
+                    LogPrintf("ThreadStakeMinter: Masternode entry lost, re-creating from new outpoint %s\n",
+                             newOutpoint.ToString());
 
-                            // Re-sign with the new outpoint so peers can verify
-                            CKeyID keyID = mnCopy.pubKeyMasternode.GetID();
+                    if (!externalIP.empty() && Lookup(externalIP.c_str(), myAddr, Params().GetDefaultPort(), false)) {
+                        const CTxOut& collateralOut = coinstake.vout[1];
+                        CTxDestination dest;
+                        if (ExtractDestination(collateralOut.scriptPubKey, dest)) {
+                            LOCK(pwallet->cs_wallet);
+                            CKeyID keyID = GetKeyForDestination(*pwallet, dest);
+                            CPubKey pubKey;
                             CKey key;
-                            if (pwallet->GetKey(keyID, key)) {
-                                mnCopy.Sign(key);
-                                LogPrintf("ThreadStakeMinter: Re-signed masternode with new outpoint %s\n",
-                                         newOutpoint.ToString());
-                            } else {
-                                LogPrintf("ThreadStakeMinter: WARNING - failed to get key for re-signing masternode\n");
-                            }
+                            if (pwallet->GetPubKey(keyID, pubKey) && pwallet->GetKey(keyID, key)) {
+                                CMasternode mn(newOutpoint, myAddr, pubKey);
+                                mn.Sign(key);
+                                mnodeman.Add(mn);
+                                mnodeman.Save();
+                                nCleanupCounter = 0;
 
-                            // Re-index in masternode manager
-                            mnodeman.Remove(pmnOldOutpoint);
-                            mnodeman.Add(mnCopy);
-                            // Persist to disk immediately to survive crashes
-                            mnodeman.Save();
-
-                            // Reset cleanup counter so CheckAndRemove doesn't
-                            // immediately run on the next iteration
-                            nCleanupCounter = 0;
-
-                            // Broadcast updated masternode to network so peers
-                            // update their outpoint before CheckAndRemove removes the old one
-                            if (g_connman) {
-                                g_connman->ForEachNode([&mnCopy](CNode* pnode) {
-                                    g_connman->PushMessage(pnode, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::MNANNOUNCE, mnCopy));
-                                });
-                                LogPrintf("ThreadStakeMinter: Broadcast updated masternode %s to network\n",
-                                         newOutpoint.ToString());
-                            }
-
-                            LogPrintf("ThreadStakeMinter: Updated masternode collateral %s -> %s (saved to disk)\n",
-                                     oldOutpoint.ToString(), newOutpoint.ToString());
-                        } else {
-                            // Both Find and FindByIP failed — re-create the masternode entry
-                            // from scratch using the new outpoint. This handles the case where
-                            // CheckAndRemove ran on another thread and removed the old entry.
-                            LogPrintf("ThreadStakeMinter: Old masternode entry lost, re-creating from new outpoint %s\n",
-                                     newOutpoint.ToString());
-
-                            std::string externalIP = gArgs.GetArg("-externalip", "");
-                            CService myAddr;
-                            if (!externalIP.empty() && Lookup(externalIP.c_str(), myAddr, Params().GetDefaultPort(), false)) {
-                                // Get the key for the new collateral output
-                                const CTxOut& collateralOut = coinstake.vout[1];
-                                CTxDestination dest;
-                                if (ExtractDestination(collateralOut.scriptPubKey, dest)) {
-                                    CKeyID keyID = GetKeyForDestination(*pwallet, dest);
-                                    CPubKey pubKey;
-                                    CKey key;
-                                    if (pwallet->GetPubKey(keyID, pubKey) && pwallet->GetKey(keyID, key)) {
-                                        CMasternode mn(newOutpoint, myAddr, pubKey);
-                                        mn.Sign(key);
-                                        mnodeman.Add(mn);
-                                        mnodeman.Save();
-                                        nCleanupCounter = 0;
-
-                                        if (g_connman) {
-                                            g_connman->ForEachNode([&mn](CNode* pnode) {
-                                                g_connman->PushMessage(pnode, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::MNANNOUNCE, mn));
-                                            });
-                                        }
-                                        LogPrintf("ThreadStakeMinter: Re-created masternode %s at %s\n",
-                                                 newOutpoint.ToString(), myAddr.ToString());
-                                    } else {
-                                        LogPrintf("ThreadStakeMinter: ERROR - failed to get keys for re-creating masternode\n");
-                                    }
+                                if (g_connman) {
+                                    g_connman->ForEachNode([&mn](CNode* pnode) {
+                                        g_connman->PushMessage(pnode, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::MNANNOUNCE, mn));
+                                    });
                                 }
+                                LogPrintf("ThreadStakeMinter: Re-created masternode %s at %s\n",
+                                         newOutpoint.ToString(), myAddr.ToString());
+                            } else {
+                                LogPrintf("ThreadStakeMinter: ERROR - failed to get keys for re-creating masternode\n");
                             }
                         }
                     }
                 }
-            }
+            } // if (masternodeMiner.CreateBlock)
 
             // Try again in 1 second (continuously competing with miners)
             MilliSleep(1000);
