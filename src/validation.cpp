@@ -1641,6 +1641,24 @@ DisconnectResult CChainState::DisconnectBlock(const CBlock& block, const CBlockI
         }
     }
 
+    // If this was a PoS block, reverse the masternode outpoint re-key.
+    // ConnectBlock re-keyed from old (vin[0]) to new (coinstake txid:1).
+    // We must re-key back so the masternode points at the restored UTXO.
+    if (block.IsProofOfStake()) {
+        const COutPoint newOutpoint(block.vtx[1]->GetHash(), 1);
+        const COutPoint oldOutpoint = block.vtx[1]->vin[0].prevout;
+        CMasternode* pmn = mnodeman.Find(newOutpoint);
+        if (pmn) {
+            CMasternode mnCopy = *pmn;
+            mnCopy.outpoint = oldOutpoint;
+            mnCopy.UpdateLastSeen();
+            mnodeman.Remove(newOutpoint);
+            mnodeman.Add(mnCopy);
+            LogPrintf("DisconnectBlock: Reverted masternode outpoint %s -> %s after PoS block disconnect at height %d\n",
+                     newOutpoint.ToString(), oldOutpoint.ToString(), pindex->nHeight);
+        }
+    }
+
     // move best block pointer to prevout block
     view.SetBestBlock(pindex->pprev->GetBlockHash());
 
