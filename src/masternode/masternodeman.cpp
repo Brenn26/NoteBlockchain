@@ -137,8 +137,9 @@ void CMasternodeMan::CheckAndRemove()
         // Remove if expired
         if (pair.second.IsExpired()) {
             toRemove.push_back(pair.first);
-            LogPrintf("CMasternodeMan::CheckAndRemove: Removing expired masternode %s\n",
-                     pair.first.ToString());
+            LogPrintf("CMasternodeMan::CheckAndRemove: Removing expired masternode %s at %s (lastSeen=%d, age=%ds)\n",
+                     pair.first.ToString(), pair.second.addr.ToString(),
+                     pair.second.nTimeLastSeen, GetTime() - pair.second.nTimeLastSeen);
             continue;
         }
 
@@ -147,8 +148,8 @@ void CMasternodeMan::CheckAndRemove()
         Coin coin;
         if (!pcoinsTip || !pcoinsTip->GetCoin(pair.first, coin) || coin.IsSpent()) {
             toRemove.push_back(pair.first);
-            LogPrintf("CMasternodeMan::CheckAndRemove: Removing masternode %s with spent/missing UTXO\n",
-                     pair.first.ToString());
+            LogPrintf("CMasternodeMan::CheckAndRemove: Removing masternode %s at %s with spent/missing UTXO\n",
+                     pair.first.ToString(), pair.second.addr.ToString());
         }
     }
 
@@ -157,7 +158,8 @@ void CMasternodeMan::CheckAndRemove()
     }
 
     if (!toRemove.empty()) {
-        LogPrintf("CMasternodeMan::CheckAndRemove: Removed %d invalid masternodes\n", toRemove.size());
+        LogPrintf("CMasternodeMan::CheckAndRemove: Removed %d invalid masternodes (%d remaining)\n",
+                 toRemove.size(), mapMasternodes.size());
     }
 }
 

@@ -79,8 +79,14 @@ bool CMasternodeMiner::SelectMasternodeCoins(std::vector<COutput>& vCoins,
 
     // Find our registered masternode for this IP
     CMasternode* pmn = mnodeman.FindByIP(myAddr);
-    if (!pmn || !pmn->IsEnabled()) {
-        LogPrintf("CMasternodeMiner: No active masternode registered for IP %s. Run 'masternode start' to activate.\n", myAddr.ToString());
+    if (!pmn) {
+        LogPrintf("CMasternodeMiner: No masternode found for IP %s (mnodeman has %d entries). Run 'masternode start' to activate.\n",
+                 myAddr.ToString(), mnodeman.size());
+        return false;
+    }
+    if (!pmn->IsEnabled()) {
+        LogPrintf("CMasternodeMiner: Masternode at %s is not enabled (state=%s, outpoint=%s)\n",
+                 myAddr.ToString(), pmn->GetStatus(), pmn->outpoint.ToString());
         return false;
     }
 
