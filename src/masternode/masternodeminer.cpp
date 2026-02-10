@@ -86,17 +86,35 @@ bool CMasternodeMiner::SelectMasternodeCoins(std::vector<COutput>& vCoins,
 
     // Verify we own the registered masternode's collateral
     // Note: After staking, the wallet's BlockConnected notification is async,
-    // so the coinstake tx may not be in mapWallet yet. We verify via pcoinsTip instead.
+    // so the coinstake tx may not be in mapWallet yet. If the UTXO exists in
+    // pcoinsTip as a coinstake output, wait briefly for the wallet to catch up.
     const CWalletTx* wtx = pwallet->GetWalletTx(pmn->outpoint.hash);
     if (!wtx) {
-        // Wallet may not have synced yet after last block — verify UTXO directly
+        // Check if this is a coinstake UTXO the wallet hasn't learned about yet
         Coin coin;
-        if (pcoinsTip && pcoinsTip->GetCoin(pmn->outpoint, coin) && !coin.IsSpent()) {
-            LogPrintf("CMasternodeMiner: Collateral %s not yet in wallet (async sync), but UTXO exists — skipping this round\n", pmn->outpoint.ToString());
+        if (pcoinsTip && pcoinsTip->GetCoin(pmn->outpoint, coin) && !coin.IsSpent() && coin.IsCoinStake()) {
+            // Coinstake output exists on-chain but wallet is behind — poll briefly
+            for (int nRetry = 0; nRetry < 20 && !wtx; nRetry++) {
+                MilliSleep(250);
+                wtx = pwallet->GetWalletTx(pmn->outpoint.hash);
+            }
+            if (wtx) {
+                LogPrintf("CMasternodeMiner: Wallet caught up with coinstake %s after brief wait\n",
+                         pmn->outpoint.ToString());
+            } else {
+                LogPrintf("CMasternodeMiner: Collateral %s not yet in wallet (async sync), but coinstake UTXO exists — skipping this round\n",
+                         pmn->outpoint.ToString());
+                return false;
+            }
+        } else if (pcoinsTip && pcoinsTip->GetCoin(pmn->outpoint, coin) && !coin.IsSpent()) {
+            LogPrintf("CMasternodeMiner: Collateral %s not in wallet but UTXO exists — skipping this round\n",
+                     pmn->outpoint.ToString());
+            return false;
         } else {
-            LogPrintf("CMasternodeMiner: Registered masternode collateral %s not found in our wallet or UTXO set\n", pmn->outpoint.ToString());
+            LogPrintf("CMasternodeMiner: Registered masternode collateral %s not found in our wallet or UTXO set\n",
+                     pmn->outpoint.ToString());
+            return false;
         }
-        return false;
     }
     if (pmn->outpoint.n >= wtx->tx->vout.size() || !pwallet->IsMine(wtx->tx->vout[pmn->outpoint.n])) {
         LogPrintf("CMasternodeMiner: Registered masternode collateral %s not owned by our wallet\n", pmn->outpoint.ToString());
@@ -373,9 +391,18 @@ void ThreadStakeMinter(CWallet* pwallet)
 
                 if (ProcessNewBlock(Params(), shared_pblock, true, &fNewBlock)) {
                     if (fNewBlock) {
-                        // Give the scheduler time to process BlockConnected so the
-                        // wallet sees the coinstake transaction
-                        MilliSleep(500);
+                        // Wait for the wallet's async BlockConnected to process the
+                        // coinstake tx. Poll every 100ms for up to 5 seconds.
+                        const uint256& csTxid = block.vtx[1]->GetHash();
+                        for (int nWait = 0; nWait < 50; nWait++) {
+                            MilliSleep(100);
+                            if (pwallet->GetWalletTx(csTxid))
+                                break;
+                        }
+                        if (!pwallet->GetWalletTx(csTxid)) {
+                            LogPrintf("ThreadStakeMinter: WARNING - wallet did not sync coinstake tx %s within 5 seconds\n",
+                                     csTxid.ToString().substr(0, 10));
+                        }
 
                         const CTransaction& cs = *block.vtx[1];
                         LogPrintf("ThreadStakeMinter: Masternode block accepted! Height=%d Hash=%s "

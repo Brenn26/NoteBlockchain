@@ -2090,13 +2090,22 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
         pindex->SetProofOfStake();
         ComputeNextStakeModifier(pindex->pprev, pindex->nStakeModifier);
 
-        // Update masternode last-seen time when it produces a valid block
-        // This prevents active masternodes from being expired while they're producing blocks
+        // Update masternode registration after a PoS block.
+        // The coinstake spent the old collateral (vin[0]) and returned it in a new
+        // UTXO (vout[1]). We must re-key the masternode entry so CheckAndRemove
+        // doesn't remove it when it sees the old outpoint is spent.
         {
-            const COutPoint& coinstakeOutpoint = block.vtx[1]->vin[0].prevout;
-            CMasternode* pmn = mnodeman.Find(coinstakeOutpoint);
+            const COutPoint oldOutpoint = block.vtx[1]->vin[0].prevout;
+            const COutPoint newOutpoint(block.vtx[1]->GetHash(), 1);
+            CMasternode* pmn = mnodeman.Find(oldOutpoint);
             if (pmn) {
-                pmn->UpdateLastSeen();
+                CMasternode mnCopy = *pmn;
+                mnCopy.outpoint = newOutpoint;
+                mnCopy.UpdateLastSeen();
+                mnodeman.Remove(oldOutpoint);
+                mnodeman.Add(mnCopy);
+                LogPrintf("ConnectBlock: Updated masternode outpoint %s -> %s after PoS block at height %d\n",
+                        oldOutpoint.ToString(), newOutpoint.ToString(), pindex->nHeight);
             }
         }
     } else {
