@@ -79,8 +79,26 @@ bool CheckStakeKernelHash(unsigned int nBits,
         return false;
     }
 
-    // Get stake modifier from previous block
+    // Get stake modifier from the block where the collateral was created.
+    // If it's 0 (not yet computed or lost after restart from old DB format),
+    // recompute the entire chain of modifiers from genesis forward.
     uint64_t nStakeModifier = pindexFrom->nStakeModifier;
+    if (nStakeModifier == 0 && pindexFrom->nHeight > 0) {
+        // Walk back to find the deepest block with modifier=0, then recompute forward
+        std::vector<CBlockIndex*> vToCompute;
+        CBlockIndex* pWalk = const_cast<CBlockIndex*>(pindexFrom);
+        while (pWalk && pWalk->nStakeModifier == 0 && pWalk->nHeight > 0) {
+            vToCompute.push_back(pWalk);
+            pWalk = pWalk->pprev;
+        }
+        // Compute forward from the last known good modifier
+        for (int i = (int)vToCompute.size() - 1; i >= 0; i--) {
+            ComputeNextStakeModifier(vToCompute[i]->pprev, vToCompute[i]->nStakeModifier);
+        }
+        nStakeModifier = pindexFrom->nStakeModifier;
+        LogPrintf("CheckStakeKernelHash: Recomputed %d stake modifiers (pindexFrom height=%d)\n",
+                 vToCompute.size(), pindexFrom->nHeight);
+    }
 
     // Calculate the hash: hash(stakeModifier + txPrevTime + txPrevHash + txPrevN + txTime)
     CHashWriter ss(SER_GETHASH, 0);

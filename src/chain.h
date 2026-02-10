@@ -433,6 +433,10 @@ public:
         READWRITE(nTime);
         READWRITE(nBits);
         READWRITE(nNonce);
+
+        // PoS: stake modifier must be persisted so CheckStakeKernelHash
+        // produces the same result after a node restart
+        READWRITE(nStakeModifier);
     }
 
     uint256 GetBlockHash() const
