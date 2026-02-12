@@ -3358,8 +3358,10 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationSta
     if (block.GetBlockTime() <= pindexPrev->GetMedianTimePast())
         return state.Invalid(false, REJECT_INVALID, "time-too-old", "block's timestamp is too early");
 
-    // Check timestamp
-    if (block.GetBlockTime() > nAdjustedTime + MAX_FUTURE_BLOCK_TIME)
+    // Check timestamp — PoS blocks get a stricter limit to prevent kernel grinding
+    bool fLikelyPoS = (block.nNonce == 0 && nHeight >= consensusParams.nMasternodeActivationHeight && consensusParams.fAllowPoSBlocks);
+    int64_t nMaxFuture = fLikelyPoS ? MAX_FUTURE_BLOCK_TIME_POS : MAX_FUTURE_BLOCK_TIME;
+    if (block.GetBlockTime() > nAdjustedTime + nMaxFuture)
         return state.Invalid(false, REJECT_INVALID, "time-too-new", "block timestamp too far in the future");
 
     // Reject outdated version blocks when 95% (75% on testnet) of the network has upgraded:

@@ -21,6 +21,16 @@
 static const int64_t MAX_FUTURE_BLOCK_TIME = 2 * 60 * 60;
 
 /**
+ * Stricter future timestamp limit for PoS blocks (3 minutes).
+ * PoW uses 2 hours because miners have no control over when they find a hash.
+ * PoS stakers choose the timestamp as part of the kernel hash, so a large
+ * window lets attackers grind through thousands of timestamps to find a
+ * valid kernel. 3 minutes allows for normal clock skew while limiting the
+ * grinding window from 7200 to 180 attempts.
+ */
+static const int64_t MAX_FUTURE_BLOCK_TIME_POS = 3 * 60;
+
+/**
  * Timestamp window used as a grace period by code that compares external
  * timestamps (such as timestamps passed to RPCs, or wallet key creation times)
  * to block timestamps. This should be set at least as high as
