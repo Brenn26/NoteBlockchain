@@ -304,13 +304,66 @@ bool CMasternodeMiner::CreateBlock(CBlock& block, CWallet* pwallet, const CChain
     if (!CreateCoinStake(chainparams, pwallet, nBits, txCoinstake, nTxNewTime))
         return false;
 
+    // Select mempool transactions to include in this PoS block.
+    // Without this, PoS blocks would confirm zero user transactions, defeating
+    // the purpose of keeping the chain moving when PoW difficulty is high.
+    // We reuse BlockAssembler's fee-optimized, ancestor-aware selection logic.
+    std::vector<CTransactionRef> vMempoolTxs;
+    CAmount nTotalFees = 0;
+    try {
+        CScript dummyScript = CScript() << OP_TRUE;
+        BlockAssembler assembler(chainparams);
+        std::unique_ptr<CBlockTemplate> ptemplate = assembler.CreateNewBlock(dummyScript);
+        if (ptemplate) {
+            for (size_t i = 1; i < ptemplate->block.vtx.size(); i++) {
+                if (!ptemplate->block.vtx[i]->IsCoinStake())
+                    vMempoolTxs.push_back(ptemplate->block.vtx[i]);
+            }
+            for (size_t i = 1; i < ptemplate->vTxFees.size(); i++) {
+                nTotalFees += ptemplate->vTxFees[i];
+            }
+        }
+    } catch (const std::exception& e) {
+        LogPrintf("CMasternodeMiner::CreateBlock: Failed to select mempool txs (%s), creating block without them\n", e.what());
+        vMempoolTxs.clear();
+        nTotalFees = 0;
+    }
+
+    // If fees were collected, update the coinstake reward to include them.
+    // SIGHASH_ALL covers outputs, so the coinstake must be re-signed.
+    if (nTotalFees > 0 && !vMempoolTxs.empty()) {
+        CMutableTransaction txCoinstakeUpdated = txCoinstake;
+        CAmount nSubsidy = GetBlockSubsidy(pindexPrev->nHeight + 1, params);
+        txCoinstakeUpdated.vout[2].nValue = nSubsidy + nTotalFees;
+
+        txCoinstakeUpdated.vin[0].scriptSig.clear();
+        txCoinstakeUpdated.vin[0].scriptWitness.SetNull();
+
+        const CKeyStore& keystore = *pwallet;
+        SignatureData sigdata;
+        if (ProduceSignature(MutableTransactionSignatureCreator(
+                &keystore, &txCoinstakeUpdated, 0,
+                params.nMasternodeCollateral, SIGHASH_ALL),
+                txCoinstakeUpdated.vout[1].scriptPubKey, sigdata)) {
+            txCoinstakeUpdated.vin[0].scriptSig = sigdata.scriptSig;
+            txCoinstakeUpdated.vin[0].scriptWitness = sigdata.scriptWitness;
+            txCoinstake = txCoinstakeUpdated;
+            LogPrintf("CMasternodeMiner::CreateBlock: Including %d mempool txs, fees=%s\n",
+                     vMempoolTxs.size(), FormatMoney(nTotalFees));
+        } else {
+            LogPrintf("CMasternodeMiner::CreateBlock: Failed to re-sign coinstake with fees, excluding mempool txs\n");
+            vMempoolTxs.clear();
+            nTotalFees = 0;
+        }
+    }
+
     // Assemble block
     block.vtx.clear();
     block.vtx.push_back(MakeTransactionRef(txCoinbase));
     block.vtx.push_back(MakeTransactionRef(txCoinstake));
-
-    // Add transactions from mempool (optional - you can add more txs for fees)
-    // For simplicity, we'll just include the coinstake for now
+    for (const auto& tx : vMempoolTxs) {
+        block.vtx.push_back(tx);
+    }
 
     // Fill header
     block.nVersion = ComputeBlockVersion(pindexPrev, params);
@@ -318,7 +371,22 @@ bool CMasternodeMiner::CreateBlock(CBlock& block, CWallet* pwallet, const CChain
     block.nTime = nTxNewTime;
     block.nBits = nBits;  // Use the pre-calculated adjusted difficulty
     block.nNonce = 0; // PoS doesn't need nonce
+
+    // Add witness commitment to coinbase if segwit is active. This adds a
+    // second output to the coinbase for the witness merkle root, allowing
+    // PoS blocks to include segwit transactions.
+    GenerateCoinbaseCommitment(block, pindexPrev, params);
+
     block.hashMerkleRoot = BlockMerkleRoot(block);
+
+    // Safety check: if the block exceeds the weight limit (extremely unlikely
+    // since BlockAssembler already caps weight), fall back to subsidy-only block
+    if (GetBlockWeight(block) > MAX_BLOCK_WEIGHT) {
+        LogPrintf("CMasternodeMiner::CreateBlock: Block exceeds weight limit, excluding mempool txs\n");
+        block.vtx.resize(2);
+        GenerateCoinbaseCommitment(block, pindexPrev, params);
+        block.hashMerkleRoot = BlockMerkleRoot(block);
+    }
 
     return true;
 }
